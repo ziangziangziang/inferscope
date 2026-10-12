@@ -120,6 +120,28 @@ export interface TurnResult {
   request_id?: string; session_id?: string;
 }
 
+export const engines = () => j<EngineStatus>("/api/engines");
+const post = <T,>(url: string) => j<T>(url, { method: "POST" });
+
+export const engineLoad = (key: string) =>
+  post<LoadResult>(`/api/engines/${encodeURIComponent(key)}/load`);
+export const engineOffload = () => post<LoadResult>("/api/engines/offload");
+
+export async function asrTranscribe(file: File): Promise<AsrResult> {
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  const r = await fetch("/api/asr/transcribe", { method: "POST", body: fd });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body?.detail || `transcription failed (${r.status})`);
+  // A 200 that is not a transcript happens when something in front of the app
+  // answers instead (a proxy, the SPA fallback, an empty body). Rendering it as
+  // a result crashed the view on `seconds.toFixed`; say so instead.
+  if (typeof body?.text !== "string" || typeof body?.seconds !== "number") {
+    throw new Error("the backend did not return a transcript");
+  }
+  return body as AsrResult;
+}
+
 export const api = {
   health: () => j<Health>("/api/health"),
   access: () => j<Access>("/api/access"),
@@ -191,4 +213,34 @@ export async function chatSend(body: {
       try { onEvent(kind, JSON.parse(dataLines.join("\n"))); } catch { /* partial frame */ }
     }
   }
+}
+
+/* ---- engine load/offload (speech, image, video) ---- */
+
+export interface EngineInfo {
+  key: string; label: string; family: string; purpose: string;
+  port: number; binary: string; model: string;
+  configured: boolean; problem: string; ready: boolean;
+  exclusive: boolean; extra: Record<string, string>; hint: string;
+}
+
+export interface EngineStatus {
+  loaded: string | null;
+  pid: number | null;
+  uptime_s: number;
+  log_path: string;
+  engines: EngineInfo[];
+}
+
+export interface LoadResult {
+  ok?: boolean; engine?: string; evicted?: string | null;
+  error: string | null; already?: boolean;
+  /** offload replies with stopped/detail instead of ok */
+  stopped?: boolean; detail?: string;
+}
+
+export interface AsrResult {
+  text: string; filename: string; bytes: number;
+  seconds: number; engine: string; model: string;
+  audio_s: number | null; provenance: string;
 }

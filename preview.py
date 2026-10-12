@@ -65,11 +65,16 @@ def serve(port: int) -> ThreadingHTTPServer:
     return httpd
 
 
-def fetch_remote(url: str, timeout: int = 45) -> tuple[int, bytes, str]:
+def fetch_remote(url: str, timeout: int = 45, method: str = "GET",
+                 body: bytes | None = None,
+                 content_type: str = "") -> tuple[int, bytes, str]:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             return r.status, r.read(), r.headers.get("content-type", "application/json")
@@ -94,13 +99,20 @@ def find_browser() -> str | None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--view", default="index")
+    ap.add_argument("--nav", default=None,
+                    help="nav button label to click (views are state, not routes)")
     ap.add_argument("--out", default="shots")
     ap.add_argument("--url", default=None)
+    ap.add_argument("--direct", action="store_true",
+                    help="test the real deployment end-to-end (no local server, "
+                         "no API proxy) — needed for binary uploads")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--width", type=int, default=1500)
     ap.add_argument("--height", type=int, default=1100)
     ap.add_argument("--full", action="store_true", help="full page screenshot")
+    ap.add_argument("--upload", default=None,
+                    help="path to set on input[type=file] before shooting")
     ap.add_argument("--click", action="append", default=[],
                     help="selector to click before shooting (repeatable)")
     ap.add_argument("--hover", action="append", default=[])
@@ -109,15 +121,22 @@ def main() -> None:
     ap.add_argument("--eval", default=None, help="JS to run before shooting")
     args = ap.parse_args()
 
-    build(args.no_build)
     base = args.url or resolve_url()
-    serve(args.port)
+    if args.direct:
+        # No local bundle and no proxy: exercise the deployed app through the
+        # tunnel exactly as a user would, including multipart uploads.
+        origin = base
+    else:
+        build(args.no_build)
+        serve(args.port)
+        origin = f"http://127.0.0.1:{args.port}"
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     from playwright.sync_api import sync_playwright
 
     errors: list[str] = []
+    bad: list[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=find_browser(),
                                     args=["--force-color-profile=srgb"])
@@ -126,6 +145,8 @@ def main() -> None:
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}")
                 if m.type in ("error", "warning") else None)
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        page.on("response", lambda r: (
+            bad.append(f"{r.status} {r.request.method} {r.url}") if r.status >= 400 else None))
 
         def handler(route):
           try:
@@ -136,7 +157,16 @@ def main() -> None:
                     return route.fulfill(status=200, body=body,
                                           content_type="text/event-stream")
             try:
-                st, body, ct = fetch_remote(base + path)
+                req = route.request
+                # post_data_buffer keeps binary bodies (multipart audio) intact;
+                # post_data alone returns null for them.
+                raw = getattr(req, "post_data_buffer", None)
+                payload = bytes(raw) if raw else req.post_data
+                st, body, ct = fetch_remote(
+                    base + path,
+                    method=req.method,
+                    body=payload,
+                    content_type=(req.headers or {}).get("content-type", ""))
             except Exception as e:                            # noqa: BLE001
                 errors.append(f"fetch {path}: {e}")
                 return route.fulfill(status=200, body="{}",
@@ -146,11 +176,20 @@ def main() -> None:
             return route.fulfill(status=200, body="{}",
                                  content_type="application/json")
 
-        page.route("**/api/**", handler)
-        page.goto(f"http://127.0.0.1:{args.port}/#{args.view}",
-                  wait_until="networkidle", timeout=60000)
+        if not args.direct:
+            page.route("**/api/**", handler)
+        # The app polls on a timer, so `networkidle` never settles over the
+        # tunnel; wait for the shell instead and then for what we actually want.
+        page.goto(f"{origin}/#{args.view}",
+                  wait_until="domcontentloaded", timeout=90000)
+        page.wait_for_selector(".topbar .brand", timeout=45000)
+        if args.nav:
+            page.click(f".nav button:has-text('{args.nav}')", timeout=10000)
         page.wait_for_timeout(int(args.wait * 1000))
 
+        if args.upload:
+            page.set_input_files("input[type=file]", args.upload)
+            page.wait_for_timeout(500)
         for sel in args.click:
             try:
                 page.click(sel, timeout=8000)
@@ -179,6 +218,8 @@ def main() -> None:
                 svg.screenshot(path=str(sub))
             print(f"= scene shot {sub}")
 
+    for b in dict.fromkeys(bad):
+        print("   HTTP", b)
     if errors:
         print("\n!! page problems:")
         for e in dict.fromkeys(errors):

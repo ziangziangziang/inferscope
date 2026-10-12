@@ -83,10 +83,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [sessionId]);
 
   // Pull an initial latest so the overview is populated before the first SSE tick.
+  // Only the *live* session has telemetry; asking for an archived profile's
+  // overview 404s and used to leave a console error on every session switch.
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || sessionId !== health?.live_session) return;
     api.overview(sessionId).then((o) => o.latest && setLive(o.latest)).catch(() => {});
-  }, [sessionId]);
+  }, [sessionId, health?.live_session]);
 
   const value = useMemo<AppState>(() => ({
     health, sessions, sessionId, setSessionId, live,

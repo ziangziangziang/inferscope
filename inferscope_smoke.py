@@ -13,7 +13,7 @@ from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("INFERSCOPE_URL", "http://127.0.0.1:8090")
 SHOTS = Path(os.environ.get("INFERSCOPE_SHOTS", "shots"))
-VIEWS = ["index", "machine", "run", "analyze", "arch", "memory", "mm"]
+VIEWS = ["index", "machine", "run", "analyze", "arch", "memory", "mm", "engines", "speech"]
 
 
 def find_browser():
@@ -49,7 +49,7 @@ def main():
 
         for view in VIEWS:
             try:
-                pg.click(f".nav button:has-text('{ {'index':'Start here','machine':'Status','run':'Run & capture','analyze':'Analyze','arch':'Architecture','memory':'Memory & KV','mm':'Multimodal'}[view] }')", timeout=8000)
+                pg.click(f".nav button:has-text('{ {'index':'Start here','machine':'Status','run':'Run & capture','analyze':'Analyze','arch':'Architecture','memory':'Memory & KV','mm':'Multimodal','engines':'Engines','speech':'Speech'}[view] }')", timeout=8000)
             except Exception as e:
                 fails.append(f"{view}: nav click failed {str(e)[:60]}"); continue
             READY = {
@@ -60,6 +60,8 @@ def main():
                 "run": ".chat-log",
                 "machine": ".card",
                 "index": ".tree-svg",
+                "engines": ".eng-grid .eng-card",
+                "speech": ".sp-row",
             }
             try:
                 pg.wait_for_selector(READY[view], timeout=15000)
@@ -158,6 +160,65 @@ def main():
                     if want not in panel:
                         fails.append(f"scene: sub-layers missing {want}")
                 pg.screenshot(path=str(SHOTS / "scene-unit.png"))
+
+        # --- engine load / offload + ASR ---------------------------------
+        pg.click(".nav button:has-text('Engines')")
+        pg.wait_for_selector(".eng-grid .eng-card", timeout=15000)
+        cards = pg.evaluate("() => document.querySelectorAll('.eng-card').length")
+        print("engine cards:", cards)
+        if cards < 4:
+            fails.append(f"engines: only {cards} engine cards rendered")
+        if not pg.query_selector('.eng-card[data-engine="asr"]'):
+            fails.append("engines: asr card missing")
+
+        # speech refuses to transcribe unless the engine is loaded
+        pg.click(".nav button:has-text('Speech')")
+        pg.wait_for_selector(".sp-row", timeout=15000)
+        if not pg.query_selector(".notice.warn"):
+            print("speech: engine already resident")
+
+        # load it from the console, then transcribe the bundled sample
+        pg.click(".nav button:has-text('Engines')")
+        pg.wait_for_timeout(400)
+        load = pg.query_selector('.eng-card[data-engine="asr"] button.primary')
+        if load:
+            load.click()
+            try:
+                pg.wait_for_selector('.eng-card[data-engine="asr"].on', timeout=180000)
+            except Exception:
+                fails.append("engines: asr never became resident")
+            pg.screenshot(path=str(SHOTS / "engines-resident.png"))
+
+        pg.click(".nav button:has-text('Speech')")
+        pg.wait_for_selector(".sp-row", timeout=15000)
+        sample = Path("/workspace/build/whisper.cpp/samples/jfk.wav")
+        if sample.exists():
+            pg.set_input_files("input[type=file]", str(sample))
+            pg.wait_for_timeout(400)
+            pg.click("button:has-text('transcribe')")
+            try:
+                pg.wait_for_selector('[data-testid="asr-result"]', timeout=180000)
+            except Exception:
+                fails.append("speech: no transcript rendered")
+            else:
+                txt = pg.inner_text('[data-testid="asr-result"]')
+                if "country" not in txt.lower():
+                    fails.append(f"speech: transcript looks wrong ({txt[:70]!r})")
+                print("asr transcript ok")
+                pg.screenshot(path=str(SHOTS / "speech-result.png"))
+        else:
+            print("speech: no sample audio on this host, skipping transcription")
+
+        # offload again
+        pg.click(".nav button:has-text('Engines')")
+        pg.wait_for_timeout(400)
+        off = pg.query_selector('.eng-card[data-engine="asr"] button:has-text("offload")')
+        if off:
+            off.click()
+            pg.wait_for_timeout(6000)
+            if pg.query_selector('.eng-card[data-engine="asr"].on'):
+                fails.append("engines: offload did not release the engine")
+            pg.screenshot(path=str(SHOTS / "engines-offloaded.png"))
 
         # Memory KV calc produces a number
         pg.click(".nav button:has-text('Memory')")

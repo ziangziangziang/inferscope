@@ -11,6 +11,8 @@ const PROV_HELP: Record<string, string> = {
   unavailable: "this platform does not report it",
 };
 import { Analyze } from "./views/Analyze";
+import { Engines } from "./views/Engines";
+import { Speech } from "./views/Speech";
 import { Machine } from "./views/Machine";
 import { ModelSection, useModelTab } from "./views/ModelSection";
 import { Chat } from "./views/Chat";
@@ -26,7 +28,7 @@ import { Index } from "./views/Index";
  * This replaces seven equal tabs, which hid the fact that only one of them
  * (Run) produces anything and that two of them were the same data twice.
  */
-type View = "index" | "run" | "analyze" | "arch" | "memory" | "mm" | "machine";
+type View = "index" | "run" | "analyze" | "arch" | "memory" | "mm" | "engines" | "speech" | "machine";
 
 const MODEL_TABS = new Set<View>(["arch", "memory", "mm"]);
 
@@ -81,6 +83,10 @@ export function App() {
         <Section label="produce" />
         <NavBtn id="run" view={view} go={go} icon="✦" label="Run & capture" />
 
+        <Section label="engines" />
+        <NavBtn id="engines" view={view} go={go} icon="◧" label="Engines" />
+        <NavBtn id="speech" view={view} go={go} icon="◑" label="Speech" sub />
+
         <Section label="understand" />
         <NavBtn id="analyze" view={view} go={go} icon="◧" label="Analyze" />
 
@@ -108,6 +114,8 @@ export function App() {
         {error && <div className="notice bad mb">backend unreachable: {error}</div>}
         {view === "index" && <Index onOpen={(v) => go(v)} />}
         {view === "run" && <Chat />}
+        {view === "engines" && <Engines />}
+        {view === "speech" && <Speech />}
         {view === "analyze" && <Analyze />}
         {MODEL_TABS.has(view) && (
           <ModelSection tab={modelTab} setTab={(t) => go(t === "arch" ? "arch" : t === "memory" ? "memory" : "mm")} />

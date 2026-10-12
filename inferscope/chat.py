@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import signal
@@ -28,6 +29,8 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
+
+log = logging.getLogger("inferscope.chat")
 
 import httpx
 
@@ -273,6 +276,75 @@ def _delta(before: int | None, after: int | None) -> int | None:
     return max(0, after - before)
 
 
+def _proc_cmdline(pid: int) -> str:
+    with contextlib.suppress(OSError):
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    return ""
+
+
+def _proc_cwd(pid: int) -> str:
+    with contextlib.suppress(OSError):
+        return os.readlink(f"/proc/{pid}/cwd")
+    return ""
+
+
+def _APP_ROOT() -> str:
+    """Where this checkout lives; used only to recognise our own leftovers."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def reap_own_orphan(port: int, app_root: str, model_path: str = "",
+                    expect: str = "") -> int | None:
+    """Kill a *provably ours* leftover server on *port*, and return its pid.
+
+    InferScope refuses to adopt a server it did not spawn, because kernel
+    tracing has to attach to a pid it owns. That refusal is correct, but it used
+    to strand the user: the managed server is started with
+    ``start_new_session=True``, so if InferScope is killed hard (``pkill -9``,
+    an OOM, a redeploy) the ``llama-server`` child survives, is reparented to
+    init, and every later "start engine" fails with a 409 about a pid that
+    InferScope can neither trace nor stop.
+
+    So the owner check still stands — this only fires when the listener is
+    demonstrably an InferScope orphan, never for a foreign process:
+
+    * its command line names the configured model, or
+    * its working directory is this application;
+
+    *and* it is the engine binary the caller asked about. `expect` is that
+    basename. It has to come from the caller rather than being hardcoded here:
+    this function is shared by every engine, and an earlier version only
+    recognised ``llama-server``, so a perfectly good ``whisper-server``
+    orphan sitting on the ASR port was reported as "not an inference server at
+    all" and left running.
+    """
+    pid = port_in_use(port)
+    if pid is None:
+        return None
+    cmd = _proc_cmdline(pid)
+    by_model = bool(model_path) and model_path in cmd
+    by_cwd = bool(app_root) and _proc_cwd(pid).rstrip("/") == app_root.rstrip("/")
+    if not (by_model or by_cwd):
+        return None
+    if expect:
+        if expect not in cmd:
+            return None
+    elif "server" not in cmd.lower():
+        return None
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        if port_in_use(port) is None:
+            return pid
+        time.sleep(0.25)
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGKILL)
+    time.sleep(0.5)
+    return pid
+
+
 class ManagedServer:
     """A llama-server process owned by InferScope.
 
@@ -333,6 +405,15 @@ class ManagedServer:
     def start(self, log_path: str) -> None:
         if self.running:
             return
+        # A previous InferScope may have been killed hard and left its server
+        # behind; that one is ours to clear.
+        reaped = reap_own_orphan(self.port, app_root=_APP_ROOT(),
+                                 model_path=self.model_path,
+                                 expect=os.path.basename(self.binary))
+        if reaped:
+            self.error = None
+            log.warning("cleared an orphaned InferScope llama-server (pid %s) on port %s",
+                        reaped, self.port)
         busy = port_in_use(self.port)
         if busy:
             self.error = (f"port {self.port} is already in use by pid {busy}; "

@@ -84,6 +84,31 @@ class Config:
     # Per-turn kernel capture is opt-in and bounded by capture_max_s.
     chat_profile_default: bool = field(default_factory=lambda: _env_bool("INFERSCOPE_CHAT_PROFILE", False))
 
+    # ---- other inference engines ----------------------------------------
+    # One GPU, one heavy engine resident at a time; loading one offloads
+    # whatever held it. Paths are configurable per engine so a model that does
+    # not fit on /workspace can live on the larger volume.
+    asr_bin: str = field(default_factory=lambda: _env(
+        "INFERSCOPE_ASR_BIN",
+        "/workspace/build/whisper.cpp/build-hip/bin/whisper-server"))
+    asr_model: str = field(default_factory=lambda: _env(
+        "INFERSCOPE_ASR_MODEL", "/workspace/models/whisper/ggml-base.en.bin"))
+    asr_port: int = field(default_factory=lambda: _env_int("INFERSCOPE_ASR_PORT", 8082))
+    asr_threads: int = field(default_factory=lambda: _env_int("INFERSCOPE_ASR_THREADS", 8))
+
+    tts_bin: str = field(default_factory=lambda: _env("INFERSCOPE_TTS_BIN", ""))
+    tts_model: str = field(default_factory=lambda: _env("INFERSCOPE_TTS_MODEL", ""))
+    tts_port: int = field(default_factory=lambda: _env_int("INFERSCOPE_TTS_PORT", 8083))
+    tts_voice: str = field(default_factory=lambda: _env("INFERSCOPE_TTS_VOICE", ""))
+
+    image_bin: str = field(default_factory=lambda: _env("INFERSCOPE_IMAGE_BIN", ""))
+    image_model: str = field(default_factory=lambda: _env("INFERSCOPE_IMAGE_MODEL", ""))
+    image_port: int = field(default_factory=lambda: _env_int("INFERSCOPE_IMAGE_PORT", 8084))
+
+    video_bin: str = field(default_factory=lambda: _env("INFERSCOPE_VIDEO_BIN", ""))
+    video_model: str = field(default_factory=lambda: _env("INFERSCOPE_VIDEO_MODEL", ""))
+    video_port: int = field(default_factory=lambda: _env_int("INFERSCOPE_VIDEO_PORT", 8085))
+
     @property
     def bind_url(self) -> str:
         return f"http://{self.host}:{self.port}"

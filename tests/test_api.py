@@ -201,3 +201,57 @@ def test_index_assets_present(client):
     chat/state for the engine bar; both must answer even with no model loaded."""
     assert client.get("/api/models").status_code == 200
     assert client.get("/api/chat/state").status_code == 200
+
+
+def _fmt(rate: int = 16000) -> bytes:
+    """A minimal, correct 16-byte WAVEFORMATEX (mono, 16-bit)."""
+    return (b"\x01\x00"            # wFormatTag = PCM
+            + b"\x01\x00"          # nChannels = 1
+            + rate.to_bytes(4, "little")          # nSamplesPerSec
+            + (rate * 2).to_bytes(4, "little")    # nAvgBytesPerSec
+            + b"\x02\x00"          # nBlockAlign
+            + b"\x10\x00")         # wBitsPerSample = 16
+
+
+def _wav(chunks: list[tuple[bytes, bytes]], rate: int = 16000) -> bytes:
+    """Build a RIFF/WAVE with a correct fmt chunk plus *chunks* after it."""
+    fmt = _fmt(rate)
+    out = b"fmt " + len(fmt).to_bytes(4, "little") + fmt
+    for cid, payload in chunks:
+        out += cid + len(payload).to_bytes(4, "little") + payload
+        if len(payload) & 1:            # chunks are word-aligned
+            out += b"\x00"
+    return b"RIFF" + (len(out) + 8).to_bytes(4, "little") + b"WAVE" + out
+
+
+def test_wav_seconds_reads_plain_wav():
+    from inferscope.api import _wav_seconds
+    payload = b"\x00" * 32000                      # 1s at 16kHz mono s16
+    w = _wav([(b"data", payload)], rate=16000)
+    assert _wav_seconds(w) == 1.0
+
+
+def test_wav_seconds_skips_extra_chunks_before_data():
+    """LIST/fact chunks before `data` are normal; a fixed 44-byte header read
+    gets this wrong and reported 0.0s."""
+    from inferscope.api import _wav_seconds
+    payload = b"\x00" * 32000
+    w = _wav([(b"LIST", b"INFOhello"), (b"fact", b"\x00" * 4),
+              (b"data", payload)], rate=16000)
+    assert _wav_seconds(w) == 1.0
+
+
+def test_wav_seconds_clamps_an_overstated_data_size():
+    from inferscope.api import _wav_seconds
+    payload = b"\x00" * 16000                      # 0.5s of real audio
+    fmt = _fmt(16000)
+    out = b"fmt " + len(fmt).to_bytes(4, "little") + fmt
+    out += b"data" + (999999999).to_bytes(4, "little") + payload
+    w = b"RIFF" + (len(out) + 8).to_bytes(4, "little") + b"WAVE" + out
+    assert _wav_seconds(w) == 0.5
+
+
+def test_wav_seconds_returns_none_for_non_wav():
+    from inferscope.api import _wav_seconds
+    assert _wav_seconds(b"ID3\x04\x00\x00\x00\x00\x00") is None
+    assert _wav_seconds(b"") is None

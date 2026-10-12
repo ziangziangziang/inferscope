@@ -163,3 +163,106 @@ def test_turn_exposes_reasoning_separately():
 def test_turn_with_content_is_not_reasoning_only():
     t = Turn(text="GPUs are fast.", reasoning="thinking...")
     assert t.as_dict()["reasoning_only"] is False
+
+
+def test_reap_refuses_a_foreign_listener():
+    """The orphan reaper must never touch a server InferScope does not own.
+
+    The whole point of refusing to adopt a foreign server is that kernel
+    tracing can only attach to a pid we spawned. If the reaper guessed wrong it
+    would kill somebody else's inference job, so it requires positive evidence
+    (our model path, or our working directory) and otherwise declines.
+    """
+    import socket
+    from inferscope.chat import reap_own_orphan
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    port = s.getsockname()[1]
+    try:
+        # this listener is python3, not llama-server, and shares neither the
+        # model path nor the app root -> left alone
+        assert reap_own_orphan(port, app_root="/workspace/inferscope",
+                               model_path="/workspace/models/other.gguf") is None
+        assert s.fileno() >= 0          # still ours, still listening
+        # a free port is a no-op
+        assert reap_own_orphan(1, app_root="/", model_path="") is None
+    finally:
+        s.close()
+
+
+def test_reap_recognises_our_own_cwd(monkeypatch):
+    """Positive evidence: a llama-server whose cwd is this app is ours."""
+    from inferscope import chat
+    calls: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(chat, "port_in_use", lambda port: 4242)
+    monkeypatch.setattr(chat, "_proc_cmdline",
+                        lambda pid: "/workspace/build/llama-server -m /m/x.gguf --port 9")
+    monkeypatch.setattr(chat, "_proc_cwd", lambda pid: "/workspace/inferscope/")
+    monkeypatch.setattr(chat.time, "sleep", lambda s: None)
+    monkeypatch.setattr(chat.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+    # make the post-kill check report the port as still busy so we exercise the
+    # escalation to SIGKILL
+    seq = iter([4242, 4242, None, None])
+    monkeypatch.setattr(chat, "port_in_use", lambda port: next(seq, None))
+
+    pid = chat.reap_own_orphan(8081, app_root="/workspace/inferscope", model_path="")
+    assert pid == 4242
+    assert calls, "expected a kill to be issued"
+    assert calls[0][1] == chat.signal.SIGTERM
+
+
+def test_reap_ignores_a_foreign_llama_server(monkeypatch):
+    """A llama-server on our port but someone else's model and cwd is theirs."""
+    from inferscope import chat
+    killed: list[int] = []
+    monkeypatch.setattr(chat, "port_in_use", lambda port: 777)
+    monkeypatch.setattr(chat, "_proc_cmdline",
+                        lambda pid: "/opt/llama-server -m /home/someone/model.gguf")
+    monkeypatch.setattr(chat, "_proc_cwd", lambda pid: "/home/someone")
+    monkeypatch.setattr(chat.os, "kill", lambda pid, sig: killed.append(pid))
+    assert chat.reap_own_orphan(8081, app_root="/workspace/inferscope",
+                                model_path="/workspace/models/Qwen3.8.gguf") is None
+    assert not killed
+
+
+def test_reap_recognises_another_engine_kind(monkeypatch):
+    """The reaper must be generic across engine kinds.
+
+    It only ever recognised ``llama-server``, so an orphaned ``whisper-server``
+    — matching our model path exactly — was dismissed as "not an inference
+    server" and left holding the ASR port forever.
+    """
+    from inferscope import chat
+    killed: list[tuple[int, int]] = []
+    seq = iter([4242, 4242, None, None])
+    monkeypatch.setattr(chat, "port_in_use", lambda port: next(seq, None))
+    monkeypatch.setattr(chat, "_proc_cmdline", lambda pid:
+        "/workspace/build/whisper.cpp/build-hip/bin/whisper-server "
+        "-m /workspace/models/whisper/ggml-base.en.bin --port 8082")
+    monkeypatch.setattr(chat, "_proc_cwd", lambda pid: "/somewhere/else")
+    monkeypatch.setattr(chat.time, "sleep", lambda s: None)
+    monkeypatch.setattr(chat.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    pid = chat.reap_own_orphan(8082, app_root="/workspace/inferscope",
+                               model_path="/workspace/models/whisper/ggml-base.en.bin",
+                               expect="whisper-server")
+    assert pid == 4242
+    assert killed and killed[0][1] == chat.signal.SIGTERM
+
+
+def test_reap_will_not_kill_a_different_binary_on_our_model(monkeypatch):
+    """Matching the model path is necessary but not sufficient: the process must
+    also be the binary we would have started."""
+    from inferscope import chat
+    killed: list[int] = []
+    monkeypatch.setattr(chat, "port_in_use", lambda port: 555)
+    monkeypatch.setattr(chat, "_proc_cmdline", lambda pid:
+        "/opt/someone-elses-tool -m /workspace/models/whisper/ggml-base.en.bin")
+    monkeypatch.setattr(chat, "_proc_cwd", lambda pid: "/home/someone")
+    monkeypatch.setattr(chat.os, "kill", lambda pid, sig: killed.append(pid))
+    assert chat.reap_own_orphan(8082, app_root="/workspace/inferscope",
+                                model_path="/workspace/models/whisper/ggml-base.en.bin",
+                                expect="whisper-server") is None
+    assert not killed

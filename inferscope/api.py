@@ -12,10 +12,12 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import time
+import urllib.request
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -32,6 +34,7 @@ from .collectors import GpuCollector, SystemCollector
 from .config import Config
 from .demo import seed_demo
 from .engines import LlamaCppAdapter, VLLMAdapter
+from .enginectl import EngineManager, build_engine_specs
 from .kv import KVInputs, kv_cache_bytes
 from .schema import Event, EventKind, Provenance, Sample, Source
 from .store import SessionStore, TraceStore
@@ -65,6 +68,10 @@ class AppState:
         self._pending_events: list[Event] = []
         self.chat_server = None      # ManagedServer, created lazily
         self.chat_lock = asyncio.Lock()
+        # Load/offload control for the non-language engines (speech, image,
+        # video). One heavy engine at a time on one GPU.
+        self.engine_ctl = EngineManager(build_engine_specs(config))
+        self.engine_lock = asyncio.Lock()
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=256)
@@ -162,6 +169,66 @@ def _session_event_count(state, sid: str) -> int:
             "SELECT count(*) n FROM pq_events WHERE session_id=?", [sid])[0]["n"])
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _multipart(fields: dict) -> tuple[bytes, str]:
+    """Build a multipart/form-data body. Returns (body, content_type)."""
+    boundary = "----inferscope" + hashlib.sha1(os.urandom(16)).hexdigest()[:16]
+    out = bytearray()
+    for key, val in fields.items():
+        out += f"--{boundary}\r\n".encode()
+        if isinstance(val, tuple):
+            filename, blob, ctype = val
+            out += (f'Content-Disposition: form-data; name="{key}"; '
+                    f'filename="{filename}"\r\n').encode()
+            out += f"Content-Type: {ctype}\r\n\r\n".encode()
+            out += blob + b"\r\n"
+        else:
+            out += f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+            out += str(val).encode() + b"\r\n"
+    out += f"--{boundary}--\r\n".encode()
+    return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
+def _http_post(url: str, body: bytes, content_type: str, timeout: float):
+    """POST bytes and return (status, text, content-type)."""
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": content_type})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read().decode("utf-8", "replace"), \
+            r.headers.get("content-type", "")
+
+
+def _wav_seconds(data: bytes) -> Optional[float]:
+    """Duration of a RIFF/WAVE file in seconds, or None if it is not WAV.
+
+    Walks the chunk list rather than assuming a 44-byte header: real files
+    carry LIST/fact chunks before ``data``, and a header-size assumption reads
+    the wrong bytes and reports 0.0s for every clip.
+    """
+    import struct
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return None
+    pos = 12
+    byte_rate: Optional[int] = None
+    data_size = 0
+    while pos + 8 <= len(data):
+        cid = data[pos:pos + 4]
+        (size,) = struct.unpack_from("<I", data, pos + 4)
+        body = pos + 8
+        if cid == b"fmt " and size >= 16 and body + 12 <= len(data):
+            # WAVEFORMATEX: wFormatTag(0) nChannels(2) nSamplesPerSec(4)
+            # nAvgBytesPerSec(8) nBlockAlign(12) wBitsPerSample(14). The byte
+            # rate is therefore at body+8.
+            (byte_rate,) = struct.unpack_from("<I", data, body + 8)
+        elif cid == b"data":
+            # trust the bytes we actually have: some encoders write a padded or
+            # streaming size that overruns the file
+            data_size = min(size, len(data) - body)
+        pos = body + size + (size & 1)      # chunks are word-aligned
+    if not byte_rate or data_size <= 0:
+        return None
+    return round(data_size / byte_rate, 2)
 
 
 def create_app(config: Optional[Config] = None) -> FastAPI:
@@ -454,6 +521,70 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
                 "total_us": total, "provenance": "measured"}
 
     # ---------------- models / architecture from config ----------------
+    # ---- engine load / offload ------------------------------------------
+    # One heavy engine at a time on one GPU: loading one offloads whatever held
+    # it, and the response says so rather than leaving VRAM unexplained.
+
+    @app.get("/api/engines")
+    async def engines_status():
+        return await asyncio.to_thread(state.engine_ctl.status)
+
+    @app.post("/api/engines/{key}/load")
+    async def engine_load(key: str):
+        async with state.engine_lock:
+            return await asyncio.to_thread(
+                state.engine_ctl.load, key, str(cfg.data_dir / "logs"))
+
+    @app.post("/api/engines/offload")
+    async def engine_offload():
+        async with state.engine_lock:
+            return await asyncio.to_thread(state.engine_ctl.offload)
+
+    @app.post("/api/asr/transcribe")
+    async def asr_transcribe(req: Request):
+        """Transcribe an uploaded audio file with the ASR engine.
+
+        Refuses when the engine is not resident: InferScope does not reach out
+        and start an engine behind the user's back, because loading one evicts
+        whatever else was using the GPU.
+        """
+        form = await req.form()
+        up = form.get("file")
+        if up is None or not hasattr(up, "read"):
+            raise HTTPException(400, "an audio file is required")
+        data = await up.read()
+        if not data:
+            raise HTTPException(400, "the uploaded file is empty")
+        name = getattr(up, "filename", "") or "audio"
+        if len(data) > 200 * 1024 * 1024:
+            raise HTTPException(413, "audio file is larger than 200 MB")
+        if state.engine_ctl.loaded != "asr":
+            raise HTTPException(409, "the ASR engine is not loaded — load it first")
+
+        spec = state.engine_ctl.spec("asr")
+        t0 = time.perf_counter()
+        try:
+            body, ctype = _multipart(fields={"file": (name, data, "application/octet-stream"),
+                                             "temperature": "0",
+                                             "response_format": "text"})
+            st, text, _ = await asyncio.to_thread(_http_post, spec.base_url + "/inference",
+                                                   body, ctype, 600.0)
+        except Exception as e:                              # noqa: BLE001
+            raise HTTPException(502, f"ASR engine failed: {e}")
+        if st != 200:
+            raise HTTPException(502, f"ASR engine returned {st}: {text[:200]}")
+        dt = time.perf_counter() - t0
+        return {
+            "text": (text or "").strip(),
+            "filename": name,
+            "bytes": len(data),
+            "seconds": round(dt, 3),
+            "engine": spec.label,
+            "model": spec.model,
+            "audio_s": _wav_seconds(data),
+            "provenance": "measured",
+        }
+
     @app.get("/api/models")
     def models():
         return {"models": list_models(cfg.model_dirs)}

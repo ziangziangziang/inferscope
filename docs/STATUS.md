@@ -314,6 +314,72 @@ A few things were wrong in ways that only showed up on screen:
 Two of those were only ever a problem *because* the tier was stacked on the
 scene; moving it into the panel deleted them outright rather than fixing them.
 
+## Engines: one GPU, one resident engine
+
+The machine has one GPU, so only one heavy engine can be resident at a time.
+`inferscope/enginectl.py` owns that: a registry of `EngineSpec`s (binary,
+model, port, how to prove it is serving) and an `EngineManager` that keeps at
+most one process alive. Loading an engine **offloads whatever held the card
+first and says so in the response** — that eviction is the thing a user cannot
+deduce from a VRAM number, so it is stated rather than implied.
+
+Every engine is a local HTTP service on loopback with one contract
+(`GET /health`, then a task-specific POST). That uniformity is what lets one
+manager load a speech recogniser and, later, a diffusion pipeline, without
+knowing anything about either. Adding an engine is one `EngineSpec` plus one
+branch in the API.
+
+It is deliberately separate from `engines.py`, which only *reads* Prometheus
+metrics from an engine that is already running, and from `chat.py`, which owns
+the language-model server.
+
+Ownership rules carried over from the language-model server, for the same
+reason — a profiler must attach to a pid we spawned:
+
+* never adopt a listener we did not start;
+* clear a listener only when it is provably our own leftover;
+* otherwise refuse, naming the pid.
+
+### The orphan reaper had to become generic
+
+`reap_own_orphan` cleared a leftover server on the chat port after a hard
+`pkill -9` of InferScope orphaned it. Its ownership test hardcoded
+`"llama-server"`, which was fine when llama.cpp was the only managed process and
+wrong the moment a second engine existed: a `whisper-server` orphan sitting on
+the ASR port matched our model path exactly and was still dismissed as "not an
+inference server at all".
+
+The binary name now comes from the caller (`expect=`), so the rule is "the
+process holds our model **and** is the binary we would have started". Two tests
+pin both directions: ours gets reaped, a same-model different-binary does not.
+
+### ASR (speech to text)
+
+whisper.cpp built from source against ROCm 7.2 (`-DGGML_HIP=ON`,
+`gfx1100`), model `ggml-base.en`. `/api/asr/transcribe` posts multipart audio to
+the engine's `/inference`, and returns the text plus **measured** timings: audio
+duration and engine wall time, so the view can show a real factor rather than a
+round trip.
+
+Measured on the 11s JFK sample: **0.23s, ~48× realtime**, on the GPU.
+
+Two things worth recording:
+
+- `huggingface_hub` could not fetch the model (its client does not survive this
+  network), but `curl -L` through the same proxy downloads it fine. Large model
+  pulls here go through curl.
+- The WAV duration parser read `0.0s` for every clip until it walked the chunk
+  list instead of assuming a 44-byte header. Fixing the offset then needed two
+  more passes — the byte rate is at `body+8` in a WAVEFORMATEX, not `+10` or
+  `+28` — and the test helper itself was emitting a malformed `fmt` chunk with
+  an extra WORD and no word-alignment padding. Three bugs in a row, all of them
+  invisible until a real file went through.
+
+The view refuses to transcribe unless the engine is already loaded, and points
+at the Engines screen. Loading an engine evicts whatever else is on the GPU;
+that is the user's decision to make, not something to trigger from a button
+that looks unrelated.
+
 ## Information architecture (restructured)
 
 The UI had **seven equal tabs** that hid the fact that only one of them
