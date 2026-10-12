@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../state";
 import { api, chatSend, type ChatState, type SampleRow } from "../lib/api";
 import { HostScene, type Node } from "../components/Scene";
+import { SceneDetail } from "../components/SceneDetail";
+import { toArch, type Sel } from "../components/archTypes";
 import { Info } from "../components/Info";
 
 /**
@@ -27,6 +29,21 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
   const [think, setThink] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
+
+  /* --- model architecture, for the scene --------------------------- */
+  const [sel, setSel] = useState<Sel>(null);
+  const [arch, setArch] = useState<ReturnType<typeof toArch>>(null);
+
+  // Selecting the model unfolds the architecture; anything else just moves the
+  // detail panel. One flag, because "is the architecture open" is exactly
+  // "is the model the current selection".
+  const archOpen = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
+
+  const pick = (s: NonNullable<Sel>) => setSel((cur) => {
+    // clicking the model a second time folds the architecture back away
+    if (s.kind === "model" && cur?.kind === "model") return null;
+    return s;
+  });
   // Counted in a ref: the catch handler closes over the state from the render
   // that started the turn, so reading state there would always report 0.
   const got = useRef(0);
@@ -52,6 +69,26 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
 
   const running = !!chat?.ready;
   const server = chat?.server;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.models()
+      .then((m) => {
+        if (cancelled || !m.models?.length) return null;
+        // Prefer whichever model the running engine actually loaded.
+        const want = (server?.model ?? "").replace(/\.gguf$/i, "");
+        const found = m.models.find((x) => x.model_id === want)
+          ?? m.models.find((x) => want && want.startsWith(x.model_id))
+          ?? m.models[m.models.length - 1];
+        return api.modelArch(found.model_id)
+          .then((g) => { if (!cancelled) setArch(toArch(g)); })
+          .catch(() => {});
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // `server` is derived from `chat`; depending on the model string is enough.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server?.model, running]);
 
   const pct = (v?: number | null, d = 0) => (v == null ? 0 : Math.round(v));
 
@@ -125,7 +162,7 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
   }
 
   return (
-    <div className="index">
+    <div className={"index" + (sel ? " wide" : "")}>
       <div className="index-hero">
         <h1>Watch a model think.</h1>
         <p>
@@ -135,12 +172,39 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         </p>
       </div>
 
-      <div className="scene-wrap">
-        <div className="scene-title">
-          one ground plane: the host, and the four parts that make it
-          <span className="scene-key">fill = how busy · artwork = what the part really is</span>
+      <div className={"scene-wrap" + (sel ? " side-open" : "")}>
+        <div className="scene-split" style={{ width: sel ? "100%" : undefined }}>
+          <div className="scene-main">
+            <div className="scene-title">
+              {archOpen
+                ? "the model, unfolded — every box is sized by the parameters it really holds"
+                : "the host: four parts on the plate, with the engine and the model above"}
+              <span className="scene-key">
+                {archOpen
+                  ? "click any box to open it · hover the tower to lift it clear"
+                  : "fill = how busy · click the model to unfold it"}
+              </span>
+            </div>
+            <HostScene hardware={hardware} hostTitle="HOST"
+              arch={arch} open={archOpen} sel={sel}
+              onSelect={pick} onBackground={() => setSel(null)}
+              engine={{
+                running,
+                engine: "llama.cpp",
+                model: running ? (server?.model ?? "model loaded")
+                  : (arch?.model_id ?? "—"),
+                tokens: leaves.length,
+              }} />
+          </div>
+          <div className="scene-side">
+            {sel ? (
+              <SceneDetail sel={sel} arch={arch}
+                modelName={running ? (server?.model ?? arch?.model_id ?? "") : (arch?.model_id ?? "")}
+                running={running} tokens={leaves.length}
+                onSelect={pick} onClose={() => setSel(null)} />
+            ) : null}
+          </div>
         </div>
-        <HostScene hardware={hardware} hostTitle="HOST" />
       </div>
 
       <div className="rig">

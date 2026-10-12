@@ -368,6 +368,9 @@ code { background: var(--bg3); padding: 1px 4px; }
 
 /* ---- index page ---- */
 .index { max-width: 760px; margin: 0 auto; padding: 4px 0 40px; }
+/* Opening the detail panel splits the scene in half; the column has to widen
+   or the diagram ends up scaled into illegibility. */
+.index.wide { max-width: 1180px; }
 .index-hero h1 { font-size: 30px; margin: 0 0 8px; letter-spacing: -0.01em; color: var(--fg); }
 .index-hero p { color: var(--dim); font-size: 14px; line-height: 1.65; margin: 0 0 4px; max-width: 660px; }
 .index-hero b { color: var(--fg); }
@@ -432,3 +435,131 @@ button.btn.primary:disabled { opacity: 0.45; }
 .host-title { font-size: 13px; }
 .cube-cap { font-size: 11.5px; font-weight: 700; font-family: var(--mono); }
 .cube-cap2 { font-size: 10px; fill: var(--dim); font-family: var(--mono); }
+.engine-tier { animation: tierIn .55s ease-out backwards; transform-origin: center bottom; }
+@keyframes tierIn { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: none; } }
+.engine-title { font-size: 12px; font-weight: 700; fill: #2f6b45; font-family: var(--mono); }
+.engine-sub { font-size: 9.5px; fill: #4a7d5c; font-family: var(--mono); }
+
+/* ---- scene: engine -> model tower, and the architecture tier ---- */
+.scene-svg { max-width: 1240px; }
+
+/* The tower hangs close enough to overlap the hardware — that overlap is the
+   point — and rises clear on hover so the parts underneath stay readable.
+   macOS-dock easing, because it is exactly this gesture. */
+.upper {
+  transition: transform .42s cubic-bezier(.22, 1, .36, 1);
+  transform: translateY(0);
+}
+.upper.lifted { transform: translateY(-86px); }
+@media (prefers-reduced-motion: reduce) {
+  .upper, .upper.lifted { transition: none; }
+}
+
+.tier-name {
+  font-size: 13px; font-weight: 700; fill: #2f6b45;
+  font-family: var(--mono); letter-spacing: 0.02em; pointer-events: none;
+}
+.tier-name.model { fill: #245b6b; }
+.tier-role {
+  font-size: 10px; fill: #4a7d5c; font-family: var(--mono); pointer-events: none;
+}
+.tier-role.model { fill: #3f7b8e; }
+/* paper-coloured halo: a caption must survive being drawn over the tower */
+.halo { paint-order: stroke fill; stroke: #eef4ea; stroke-width: 3.5px; stroke-linejoin: round; }
+.hw-cap .cap-t { font-size: 11.5px; font-weight: 700; font-family: var(--mono); }
+.hw-cap .cap-s { font-size: 10px; fill: var(--dim); font-family: var(--mono); }
+.tier-hint { font-size: 9px; fill: #3f7b8e; font-family: var(--mono); font-style: italic; }
+
+.grp-t { font-size: 11.5px; font-weight: 700; font-family: var(--mono); }
+.grp-s { font-size: 9.5px; fill: var(--dim); font-family: var(--mono); }
+.grp-hint { font-size: 9px; fill: var(--faint); font-family: var(--mono); font-style: italic; }
+.br-t {
+  font-size: 11px; font-weight: 700; fill: var(--fg); font-family: var(--mono);
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.br-s { font-size: 9.5px; fill: var(--dim); font-family: var(--mono); }
+
+/* interactive boxes: a clear, quiet affordance */
+.bx-hit { cursor: pointer; }
+.bx-hit .bx-t { transition: fill-opacity .15s ease, stroke-width .15s ease; }
+.bx-hit:hover .bx-t { fill-opacity: 0.95; stroke-width: 2.2; }
+.bx-hit:hover { filter: drop-shadow(0 2px 3px rgba(30, 50, 35, .22)); }
+.bx-hit:focus, .bx-hit:focus-visible { outline: none; }
+.bx-hit:focus-visible .bx-t { stroke-width: 2.6; }
+/* Selected: un-dimmed and ringed in the accent. On a 26px box the default
+   hairline is too subtle to read as "this one", especially against 63 dimmed
+   neighbours that look almost identical. */
+.bx-sel .bx-t { stroke: #15703c; stroke-width: 3.2; }
+.bx-sel .bx-l, .bx-sel .bx-r { stroke: #15703c; stroke-width: 2.4; }
+
+/* when something is selected, everything else recedes — but stays legible,
+   because the selected box is understood by its position in the whole */
+.dimmed { opacity: .34; transition: opacity .25s ease; }
+.dimmed .bx-hit { cursor: default; }
+.dimmed .bx-hit:hover .bx-t { fill-opacity: .62; stroke-width: unset; }
+
+.arch-feed {
+  stroke: #6f8f7a; stroke-width: 1.6; stroke-dasharray: 6 4;
+  opacity: .8; pointer-events: none; marker-end: none;
+}
+.arch-tier { animation: archIn .5s cubic-bezier(.22, 1, .36, 1) backwards; transform-origin: center bottom; }
+@keyframes archIn { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+
+/* ---- the sliding detail panel ---- */
+.scene-split { display: flex; align-items: stretch; gap: 0; }
+.scene-main { flex: 1 1 auto; min-width: 0; transition: flex-basis .3s ease; }
+.scene-side {
+  flex: 0 0 0px; overflow: hidden; min-width: 0;
+  transition: flex-basis .34s cubic-bezier(.22, 1, .36, 1);
+}
+.scene-wrap.side-open .scene-side { flex-basis: 50%; }
+@media (prefers-reduced-motion: reduce) {
+  .scene-side, .scene-main { transition: none; }
+}
+.side-inner {
+  height: 100%; overflow-y: auto; border-left: 1px solid var(--line);
+  padding: 12px 18px 20px; background: #f4f8f1; position: relative;
+  width: 100%;
+}
+.grp-t, .grp-s, .grp-hint, .br-t, .br-s { paint-order: stroke fill;
+  stroke: #eef4ea; stroke-width: 3px; stroke-linejoin: round; }
+.side-inner h3 {
+  margin: 0 0 2px; font-size: 15px; font-weight: 700; color: var(--fg);
+}
+.side-role {
+  font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 10px;
+}
+.side-close {
+  position: absolute; top: 8px; right: 10px;
+}
+.side-kv {
+  display: grid; grid-template-columns: minmax(84px, auto) 1fr; gap: 4px 12px;
+  font-size: 12px; margin: 10px 0 14px;
+}
+.side-kv dt { color: var(--dim); }
+.side-kv dd { margin: 0; font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+.side-note {
+  font-size: 12px; line-height: 1.55; color: var(--dim); margin: 10px 0;
+  border-left: 2px solid var(--line2); padding-left: 10px;
+}
+.side-rows { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+/* The share bar is a backdrop, not a flex child — as a child it shoved the
+   label into the middle and broke the value column. */
+.side-row.sub { position: relative; overflow: hidden; align-items: baseline; }
+.side-row.sub .sub-bar {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: #dfeee2; border-right: 1px solid #a8cbb2;
+}
+.side-row.sub b, .side-row.sub span { position: relative; }
+.side-row.sub b { text-align: left; flex: 1 1 auto; }
+.side-row {
+  display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+  padding: 5px 8px; border: 1px solid var(--line); background: #fff;
+  font-size: 12px; cursor: pointer; text-align: left; width: 100%;
+}
+.side-row:hover { background: #eef5e9; }
+.side-row.on { border-color: var(--accent); background: #e6f2e2; }
+.side-row b { font-weight: 600; color: var(--fg); }
+.side-row span { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.side-hint { font-size: 11px; color: var(--faint); font-style: italic; margin-top: 12px; }
