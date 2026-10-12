@@ -442,6 +442,12 @@ button.btn.primary:disabled { opacity: 0.45; }
 
 /* ---- scene: engine -> model tower, and the architecture tier ---- */
 .scene-svg { max-width: 1240px; }
+/* The architecture diagram now lives inside the detail panel. */
+.arch-wrap {
+  margin: 10px 0 14px; padding: 6px 2px 0;
+  border: 1px solid var(--line); background: #eef4ea;
+}
+.arch-svg { display: block; width: 100%; height: auto; }
 
 /* The tower hangs close enough to overlap the hardware — that overlap is the
    point — and rises clear on hover so the parts underneath stay readable.
@@ -523,6 +529,7 @@ button.btn.primary:disabled { opacity: 0.45; }
 }
 .grp-t, .grp-s, .grp-hint, .br-t, .br-s { paint-order: stroke fill;
   stroke: #eef4ea; stroke-width: 3px; stroke-linejoin: round; }
+.arch-tap-hint { display: none; }
 .side-inner h3 {
   margin: 0 0 2px; font-size: 15px; font-weight: 700; color: var(--fg);
 }

@@ -34,10 +34,9 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
   const [sel, setSel] = useState<Sel>(null);
   const [arch, setArch] = useState<ReturnType<typeof toArch>>(null);
 
-  // Selecting the model unfolds the architecture; anything else just moves the
-  // detail panel. One flag, because "is the architecture open" is exactly
-  // "is the model the current selection".
-  const archOpen = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
+  // Whether the detail panel is showing the model itself. The scene stays the
+  // overview either way; the architecture lives in the panel.
+  const inModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
 
   const pick = (s: NonNullable<Sel>) => setSel((cur) => {
     // clicking the model a second time folds the architecture back away
@@ -176,17 +175,15 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         <div className="scene-split" style={{ width: sel ? "100%" : undefined }}>
           <div className="scene-main">
             <div className="scene-title">
-              {archOpen
-                ? "the model, unfolded — every box is sized by the parameters it really holds"
+              {inModel
+                ? "the host, with the engine and the model running on it"
                 : "the host: four parts on the plate, with the engine and the model above"}
               <span className="scene-key">
-                {archOpen
-                  ? "click any box to open it · hover the tower to lift it clear"
-                  : "fill = how busy · click the model to unfold it"}
+                fill = how busy · hover the tower to lift it clear · click a slab to open it
               </span>
             </div>
             <HostScene hardware={hardware} hostTitle="HOST"
-              arch={arch} open={archOpen} sel={sel}
+              arch={arch} sel={sel}
               onSelect={pick} onBackground={() => setSel(null)}
               engine={{
                 running,

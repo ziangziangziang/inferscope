@@ -243,10 +243,21 @@ paper-coloured halo. The tower deliberately covers the back of the host, so a
 caption drawn with its cube would simply vanish — CPU's label disappeared
 entirely until the layer was split out.
 
-### The model, opened
+### The model, opened — in the panel, not on the stack
 
-Clicking the model unfolds its architecture above it. Two rules drive the
-layout, both in `sceneModel.ts`:
+Clicking the model opens the detail panel, and **the architecture is drawn
+there**, not unfolded above the scene. Unfolding it in place was tried first
+and was wrong: a 101-box tier on top of the host buried the hardware it was
+supposed to sit above, and still had to be scaled to ~40% to fit beside the
+panel. The scene is the *overview* — what machine, what engine, what model — and
+the panel is where detail belongs. In the panel the same diagram gets half the
+screen to itself and the host stays legible.
+
+The scene therefore keeps only the plate, the four hardware cubes and the two
+tower slabs; the model slab stays lit while the selection is anywhere inside
+the model, so the diagram still answers "where am I".
+
+Two rules drive the layout, both in `sceneModel.ts`:
 
 **A block is drawn at the size of the thing it holds.** Edge length scales as
 `params ** 0.36`. Raw analytic counts span six orders of magnitude here — a
@@ -296,12 +307,12 @@ A few things were wrong in ways that only showed up on screen:
   from the text.
 - Captions were sorted "longest last so they win" — which silently painted one
   caption over another and hid the collision instead of revealing it.
-- Seating the tier by the tower's top-back corner left a dead gap; by its
-  bottom-front corner it buried the tower. It now sits a third of the way down
-  the tower's silhouette, overlapping the shoulder.
 - The back row's caption, anchored at its left end, landed in the same screen
   patch as the front row's first component. Both captions were drawn there and
   overprinted. Back-row captions are centred above their own row now.
+
+Two of those were only ever a problem *because* the tier was stacked on the
+scene; moving it into the panel deleted them outright rather than fixing them.
 
 ## Information architecture (restructured)
 

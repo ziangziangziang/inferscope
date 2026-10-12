@@ -7,6 +7,7 @@
  */
 
 import { fmtParams } from "./sceneModel";
+import { ArchDiagram } from "./ArchDiagram";
 import type { ArchGraph, ArchNode, Sel } from "./archTypes";
 
 export interface DetailProps {
@@ -88,10 +89,10 @@ export function SceneDetail(props: DetailProps) {
     body = (
       <>
         <p className="side-note">
-          The model is just numbers — a few tens of billions of them. The engine
-          reads them in order, once per layer, to predict the next token. Every
-          box in the diagram above is one group of those numbers, drawn at the
-          size of the group it really holds.
+          The model is just numbers — a few tens of billions of them, read in
+          order once per layer to predict the next token. Every box below is one
+          group of those numbers, drawn at the size of the group it really holds.
+          Click any box to open it.
         </p>
         <dl className="side-kv">
           <KV k="family" v={String(meta.family ?? arch?.family ?? "—")} />
@@ -204,11 +205,21 @@ export function SceneDetail(props: DetailProps) {
     );
   }
 
+  // The architecture diagram belongs to the model, so it is shown whenever the
+  // selection is somewhere inside the model — the panel is where the detail
+  // belongs; the scene stays the overview.
+  const showDiagram = !!arch && (sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit");
+
   return (
     <div className="side-inner" role="region" aria-label={`details for ${title}`}>
       <button className="btn side-close" onClick={onClose} aria-label="close details">close</button>
       <h3>{title}</h3>
       <div className="side-role">{role}</div>
+      {showDiagram && arch ? (
+        <div className="arch-wrap">
+          <ArchDiagram arch={arch} sel={sel} onSelect={onSelect} />
+        </div>
+      ) : null}
       {body}
     </div>
   );

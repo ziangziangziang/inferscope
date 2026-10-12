@@ -122,7 +122,7 @@ def main():
             pg.click("svg.scene-svg .tier-model")
             pg.wait_for_timeout(900)
             boxes = pg.evaluate(
-                "() => document.querySelectorAll('svg.scene-svg .arch-boxes > g').length")
+                "() => document.querySelectorAll('.arch-svg .arch-boxes > g').length")
             print("arch boxes:", boxes)
             if boxes < 10:
                 fails.append(f"scene: architecture did not unfold ({boxes} boxes)")
@@ -139,8 +139,8 @@ def main():
             pg.wait_for_timeout(600)
             pg.click("svg.scene-svg .tier-model")
             pg.wait_for_timeout(600)
-            if pg.evaluate("() => document.querySelectorAll('svg.scene-svg .arch-boxes > g').length"):
-                fails.append("scene: clicking the model again did not fold the architecture")
+            if pg.evaluate("() => document.querySelectorAll('.arch-svg .arch-boxes > g').length"):
+                fails.append("panel: clicking the model again did not close the panel")
             # reopen for the sub-layer check
             pg.mouse.move(20, 20)
             pg.wait_for_timeout(600)
@@ -148,8 +148,8 @@ def main():
             pg.wait_for_timeout(700)
 
             # one unit of the wrapped repeat group opens its sub-layers
-            if pg.evaluate("() => document.querySelectorAll('svg.scene-svg .arch-boxes > g').length"):
-                pg.click("svg.scene-svg g[data-id='blocks#7']")
+            if pg.evaluate("() => document.querySelectorAll('.arch-svg .arch-boxes > g').length"):
+                pg.click(".arch-svg g[data-id='blocks#7']")
                 pg.wait_for_timeout(700)
                 panel = pg.inner_text(".side-inner")
                 if "UNIT 8 OF" not in panel.upper():

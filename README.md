@@ -169,7 +169,9 @@ The tower hangs close enough to overlap the hardware, which is the point: it is
 running *on* this machine. Hovering it lifts it clear (dock-style), and the
 slabs are glass so the parts underneath stay readable either way.
 
-Click the model and its architecture unfolds above it:
+Click the model and a panel takes half the screen — **the architecture is
+drawn there, not on top of the scene**. The scene stays the overview; the
+detail belongs beside it.
 
 - every box is drawn **at the size of the parameters it holds**
   (edge ∝ `params ** 0.36`, chosen so a 5,120-parameter norm and a 1.27B

@@ -27,10 +27,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Box, Ground, Bounds, iso, depth } from "./iso";
-import {
-  layoutArch, layoutCaptions, artOf, colorOf, fmtParams,
-  type Placed, type ArchLayout,
-} from "./sceneModel";
+import { fmtParams } from "./sceneModel";
 import type { ArchGraph, ArchNode, Sel } from "./archTypes";
 
 const COS30 = Math.cos(Math.PI / 6);
@@ -49,10 +46,6 @@ const TOWER_H = 58;              // both blocks: identical dimension
 const LIFT = 86;                 // hover rise, in world units of z
 
 /* ---- architecture tier ---- */
-const ARCH_Z = TOWER_Z + 2 * TOWER_H + 54;   // fallback if nothing needs raising
-const ARCH_H = 26;
-const ARCH_GAP = 12;
-const ARCH_ROW_GAP = 28;
 
 /** how far the tower rises on hover, in *screen* px (1 world z unit = 1 px) */
 export const TOWER_LIFT = LIFT;
@@ -177,7 +170,10 @@ function Tower({ engine, running, modelName, params, sel, onSelect }:
     sel: Sel; onSelect: (s: NonNullable<Sel>) => void }) {
   const zE = TOWER_Z, zM = TOWER_Z + TOWER_H;
   const dimEng = sel != null && sel.kind !== "engine";
-  const dimMod = sel != null && sel.kind !== "model";
+  // The model slab stays lit while the selection is anywhere inside it — it is
+  // the thing you are inside of, so dimming it would lose the "where am I".
+  const insideModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
+  const dimMod = sel != null && sel.kind !== "model" && !insideModel;
 
   // plate-sized weight-matrix artwork for the model slab
   const wCells = Array.from({ length: 6 * 4 }, (_, i) => ({
@@ -218,7 +214,7 @@ function Tower({ engine, running, modelName, params, sel, onSelect }:
         <Box x={PX0} y={PY0} z={zM} w={PW} d={PD} h={TOWER_H}
           color="#2f7d96" top={0.13} left={0.09} right={0.05} cellOpacity={0.34}
           cells={wCells} stroke="#26505e" className="tier-model"
-          tip={`${shortModel(modelName)} — the model weights. Click to unfold its architecture.`}
+          tip={`${shortModel(modelName)} — the model weights. Click to open its architecture.`}
           onClick={() => onSelect({ kind: "model" })}
           selected={sel?.kind === "model"} />
         <text x={labelAt(zM + TOWER_H / 2)[0]}
@@ -231,114 +227,22 @@ function Tower({ engine, running, modelName, params, sel, onSelect }:
         </text>
         <text x={labelAt(zM + TOWER_H / 2)[0]}
           y={labelAt(zM + TOWER_H / 2)[1] + 27} textAnchor="start"
-          className="tier-hint">click to unfold ↓</text>
+          className="tier-hint">click to open ↓</text>
       </g>
     </g>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* the architecture tier                                               */
-/* ------------------------------------------------------------------ */
-
-function ArchBox({ p, sel, onSelect, dimAll }:
-  { p: Placed; sel: Sel; onSelect: (s: NonNullable<Sel>) => void; dimAll: boolean }) {
-  const isUnit = p.unitIndex != null;
-  const active = isUnit
-    ? sel?.kind === "unit" && sel.id === p.groupId && sel.index === p.unitIndex
-    : sel?.kind === "node" && sel.id === p.id;
-  const dim = dimAll && !active;
-  const color = colorOf(p.node);
-  const art = artOf(p.node);
-
-  const tip = isUnit
-    ? `${p.node.label} — unit ${(p.unitIndex ?? 0) + 1} of ${p.groupCount}\n` +
-      `${fmtParams(p.node.params / (p.groupCount ?? 1))} parameters each\nclick to open its sub-layers`
-    : `${p.node.label}\n${p.node.params ? `${p.node.params.toLocaleString()} parameters` : "no weights"}` +
-      (p.node.notes?.length ? `\n${p.node.notes.filter(Boolean).join(" · ")}` : "");
-
-  return (
-    <Box x={p.x} y={p.y} z={p.z} w={p.w} d={p.d} h={p.h}
-      color={color} cells={art.cells} stripe={art.stripe}
-      top={0.74} left={0.26} right={0.16} cellOpacity={0.46}
-      className={dim ? "dimmed" : undefined}
-      selected={!!active}
-      tip={tip}
-      onClick={() => onSelect(isUnit
-        ? { kind: "unit", id: p.groupId!, index: p.unitIndex! }
-        : { kind: "node", id: p.id })} />
-  );
-}
-
-function ArchTier({ layout, arch, sel, onSelect }:
-  { layout: ArchLayout; arch: ArchGraph; sel: Sel; onSelect: (s: NonNullable<Sel>) => void }) {
-  // Boxes and captions are separate layers: a caption drawn with its own box
-  // can end up buried under a neighbour that is nearer the viewer. Captions
-  // come from `layoutCaptions`, the same function the viewBox uses.
-  const dimAll = sel?.kind === "unit";
-
-  return (
-    <g className="arch-tier">
-      <g className="arch-boxes">
-      {layout.items
-        .slice()
-        .sort((a, b) => depth(a.x, a.y) - depth(b.x, b.y))
-        .map((p) => (
-          <g key={p.id} data-id={p.id}>
-            <ArchBox p={p} sel={sel} onSelect={onSelect} dimAll={dimAll} />
-          </g>
-        ))}
-      </g>
-
-      {/* The vision branch feeds the text stream: show the join, or the two
-          parallel rows read as unrelated. */}
-      {(() => {
-        const from = layout.items.filter((i) => i.column === 1);
-        const to = layout.items.filter((i) => i.column === 0);
-        if (!from.length || !to.length) return null;
-        const last = from.reduce((a, i) => (i.order > a.order ? i : a));
-        const first = to.reduce((a, i) => (i.order < a.order ? i : a));
-        const p1 = iso(last.x + last.w, last.y + last.d / 2, last.z + last.h / 2);
-        const p2 = iso(first.x, first.y + first.d / 2, first.z + first.h / 2);
-        const mx = (p1[0] + p2[0]) / 2, my = (p1[1] + p2[1]) / 2 - 46;
-        return (
-          <path className="arch-feed" fill="none"
-            d={`M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`} />
-        );
-      })()}
-
-      {/* captions on top of every box */}
-      <g className="arch-caps">
-        {layoutCaptions(layout).map((c) => (
-          <g key={c.key}>
-            <text x={c.at[0]} y={c.at[1] + 12} textAnchor={c.anchor} className={c.cls}
-              fill={c.color}>{c.title}</text>
-            {c.sub ? (
-              <text x={c.at[0]} y={c.at[1] + 26} textAnchor={c.anchor}
-                className={c.subCls}>{c.sub}</text>
-            ) : null}
-            {c.hint ? (
-              <text x={c.at[0]} y={c.at[1] + 40} textAnchor={c.anchor}
-                className="grp-hint">{c.hint}</text>
-            ) : null}
-          </g>
-        ))}
-      </g>
-    </g>
-  );
-}
 
 /* ------------------------------------------------------------------ */
-/* the architecture tier                                               */
-/* ------------------------------------------------------------------ */
-
+/* the scene                                                           */
 /* ------------------------------------------------------------------ */
 
 export interface HostSceneProps {
   hardware: Node[];
   engine: EngineState;
   arch: ArchGraph | null;
-  open: boolean;
   sel: Sel;
   onSelect: (s: NonNullable<Sel>) => void;
   onBackground: () => void;
@@ -346,7 +250,7 @@ export interface HostSceneProps {
 }
 
 export function HostScene(props: HostSceneProps) {
-  const { hardware, engine, arch, open, sel, onSelect, hostTitle = "HOST" } = props;
+  const { hardware, engine, arch, sel, onSelect, hostTitle = "HOST" } = props;
 
   const cells: { key: string; x: number; y: number; anchor: Anchor }[] = [
     { key: "cpu", x: 0, y: 0, anchor: "above" },
@@ -358,32 +262,8 @@ export function HostScene(props: HostSceneProps) {
   const params = totalParams(arch);
   const modelName = engine.running ? (engine.model || "model") : (arch?.model_id ?? "model");
 
-  // The tier is laid out flat first, then raised to whatever height clears the
-  // tower. Raising z moves geometry straight up the screen with no sideways
-  // drift, so the model visibly grows out of the model block.
-  const flat: ArchLayout | null = arch
-    ? layoutArch(arch.nodes, { gap: ARCH_GAP, rowGap: ARCH_ROW_GAP, h: ARCH_H })
-    : null;
-  // The tower's silhouette runs from its top-back corner to its bottom-front
-  // one. Seating the tier at either extreme is wrong: at the high end there is
-  // a dead gap, at the low end the tier buries the tower. Seat it a third of
-  // the way down, so it overlaps only the tower's shoulder and reads as
-  // growing out of it.
-  const towerHighY = iso(PX0, PY0, TOWER_Z + 2 * TOWER_H)[1];
-  const towerLowY = iso(PX1, PY1, TOWER_Z)[1];
-  const tierSeatY = towerHighY + (towerLowY - towerHighY) * 0.16;
-  let archZ = ARCH_Z;
-  if (flat) {
-    let lowest = -Infinity;
-    for (const it of flat.items) lowest = Math.max(lowest, it.x + it.y + it.w + it.d);
-    archZ = Math.ceil(lowest / 2 - tierSeatY);
-  }
-  const layout: ArchLayout | null = flat
-    ? { ...flat, items: flat.items.map((it) => ({ ...it, z: archZ })) }
-    : null;
-
-  // Reserve the space the tower occupies both at rest and lifted, and the whole
-  // architecture tier, so opening the model never resizes the diagram.
+  // Reserve the space the tower occupies both at rest and lifted, so hovering
+  // never resizes the diagram.
   const b = new Bounds();
   for (const zz of [0, C]) {
     b.addP(iso(PX0, PY0, zz)); b.addP(iso(PX1, PY0, zz));
@@ -404,35 +284,11 @@ export function HostScene(props: HostSceneProps) {
   const hostLabel = iso(PX1, PY1, 0);
   b.label(hostLabel, 60, 0, 34);
 
-  if (layout && open) {
-    // arch boxes, plus the captions drawn under them
-    for (const it of layout.items) {
-      b.addP(iso(it.x, it.y, it.z + it.h));
-      b.addP(iso(it.x + it.w, it.y + it.d, it.z + it.h));
-      b.addP(iso(it.x + it.w, it.y, it.z));
-      b.addP(iso(it.x, it.y + it.d, it.z));
-    }
-    for (const it of layout.items) {
-      b.addP(iso(it.x, it.y, it.z + it.h));
-      b.addP(iso(it.x + it.w, it.y + it.d, it.z + it.h));
-      b.addP(iso(it.x + it.w, it.y, it.z));
-      b.addP(iso(it.x, it.y + it.d, it.z));
-    }
-    for (const c of layoutCaptions(layout)) {
-      const bottom = 20 + c.lines * 14 + (c.hint ? 14 : 0);
-      // `halfW` is the caption's full width; which side of the anchor it
-      // occupies depends on the anchor.
-      if (c.anchor === "start") {
-        b.add(c.at[0], c.at[1] - 16); b.add(c.at[0] + c.halfW, c.at[1] + bottom);
-      } else if (c.anchor === "end") {
-        b.add(c.at[0] - c.halfW, c.at[1] - 16); b.add(c.at[0], c.at[1] + bottom);
-      } else {
-        b.label(c.at, c.halfW / 2, 16, bottom);
-      }
-    }
-  }
+  // Anything selected inside the model still belongs to the model, so the model
+  // slab stays lit and everything else recedes.
+  const inModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
+  const hwDim = sel != null && sel.kind !== "host" && !inModel;
 
-  const hwDim = sel != null && sel.kind !== "host" && sel.kind !== "engine" && sel.kind !== "model";
 
   // Hover the tower and it rises clear of the hardware, so the parts underneath
   // are readable without losing the sense that the software is sitting on them.
@@ -480,9 +336,6 @@ export function HostScene(props: HostSceneProps) {
         <Tower engine={engine} running={engine.running} modelName={modelName}
           params={params} sel={sel} onSelect={onSelect} />
 
-        {open && layout && arch ? (
-          <ArchTier layout={layout} arch={arch} sel={sel} onSelect={onSelect} />
-        ) : null}
       </g>
 
       {/* captions last, so the hanging tower never hides which part is which */}
