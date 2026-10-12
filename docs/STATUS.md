@@ -149,8 +149,9 @@ SVG graphs, and explicit empty/unsupported/not-configured/simulated states.
   the whole DuckDB catalog, so the collector reported `state: error`. The catalog
   now validates each file's magic bytes and skips only the corrupt one.
 - Startup pruning is fault-tolerant per session, and superseded live sessions are
-  deleted, so the picker shows the sessions that matter instead of a dozen
-  identical `live` rows.
+  **reclassified to `profile`, never deleted** — sessions that carry captured
+  events are evidence, so the picker shows the sessions that matter instead of a
+  dozen identical `live` rows.
 - Tunnel discovery reads rc-tunnel's own `state.json`, inherits the broker
   environment from PID 1 (a non-interactive shell has no `FRP_BROKER_*`), and
   reports liveness as a tri-state from the tunnel client's own state. It
@@ -159,6 +160,148 @@ SVG graphs, and explicit empty/unsupported/not-configured/simulated states.
   tunnel's start are ignored, and the last decisive line wins.
 - `index.html` is served `no-cache` while hashed bundles are immutable, so UI
   fixes actually reach a browser that has cached the shell.
+
+## Tunnel watchdog (`tunnel-watchdog.sh`)
+
+The public URL kept dying while the app stayed perfectly healthy. Cause is
+upstream: the tunnel's `frpc` client loses its broker credentials every ~30–60
+min (`oauth2: "invalid_client"`), so the hostname starts serving frp's 404 page
+while `127.0.0.1:8090` still answers normally. `/api/access` correctly reported
+`reachable: false` with *"broker credentials rejected; re-issue with
+rc-tunnel expose"* — the failure was always visible, it just was not acted on.
+
+The watchdog closes that loop. Every 60s it asks the broker
+(`rc-tunnel status`) whether this pod still has an active tunnel, and re-issues
+when it does not. Verified end-to-end: `rc-tunnel stop` at 14:55:01 →
+detected at 14:55:22 → re-issued as a new URL by 14:55:26 → broker confirmed
+active at 14:55:34 → external `GET /api/health` returned **200** on the new
+URL, and the app auto-detected it via `/api/access`.
+
+Constraints that shaped it:
+
+- **Only the tunnel is touched** — never the app, the models, or ROCm/driver
+  config.
+- **The broker is the authority, not an HTTP probe.** The pod has no hairpin
+  route to its own public host, so probing the public URL from inside always
+  fails and would have caused a permanent re-issue loop.
+- **Never tears down a tunnel it cannot rebuild.** The broker env
+  (`FRP_BROKER_*`, from `/proc/1/environ`) is loaded *before* any `stop`, and the
+  re-issue aborts if it is missing. This guard was added after the first version
+  did the opposite: `export "$kv"` on a multi-line string exports one invalid
+  name, so `expose` failed *after* `stop` had already killed a working tunnel.
+- **Backs off** 30s → 60s → … capped at 10 min, so a broker outage cannot become
+  a re-issue loop.
+- **Idempotent single instance**, via a pidfile validated against
+  `/proc/<pid>/cmdline`. `flock` was tried first and **deadlocked**: a SIGKILLed
+  watchdog leaves a zombie (this container accumulates ~170 unreaped zombies)
+  whose open descriptor keeps the advisory lock held, so a new watchdog refused
+  to start with *"another watchdog already running"* while nothing was running.
+
+`run.sh` starts it on boot behind an idempotent `pgrep` guard, so it survives app
+and pod restarts. Log: `/workspace/inferscope/tunnel-watchdog.log`.
+
+**Operational consequence:** a re-issue yields a **new URL**. It is never
+hard-coded anywhere; `/api/access` and the UI top bar pick it up automatically.
+
+## The scene: engine, model, and the model opened up
+
+The front-door diagram was rebuilt around one request: **decouple the model from
+the inference engine**, and let the model's own structure be inspectable.
+
+### One camera, one set of primitives
+
+`ui/src/components/iso.tsx` holds the projection and a single generic `Box`
+(width/depth/height in world units). The earlier scene forced every box to be a
+cube, which was fine while every part happened to be the same size and stopped
+being fine the moment a component had to be drawn at its *own* size. Hardware
+cubes, the two tower slabs and every model component now go through the same
+primitive, so the perspective cannot drift between them.
+
+### The tower
+
+The engine and the model are deliberately **not merged**. A plate-sized engine
+slab (dashed — it is software, with no size of its own) carries a model slab of
+identical footprint and identical height. They are drawn as separate objects
+because they are different things that happen to live in the same place: swap
+the engine and the weights still describe the same model.
+
+The tower hangs close enough to overlap the hardware, because that overlap is
+the claim — *this is running on this machine*. Two things keep it honest:
+
+- the tower is drawn as **glass**, not solid, so the parts underneath stay
+  readable through it;
+- hovering it **lifts it clear** with macOS-dock easing.
+
+The lift has hysteresis. Without it the tower moves *away* from the cursor as it
+rises, so a pointer near the lower edge knocks it out of its own hover target,
+which drops it, which picks it up again — a visible flicker that also made the
+model box unclickable. Playwright surfaced this as
+`element is not stable`; it was a real interaction bug, not a test artefact.
+
+Hardware captions are drawn in a **separate layer after the tower**, with a
+paper-coloured halo. The tower deliberately covers the back of the host, so a
+caption drawn with its cube would simply vanish — CPU's label disappeared
+entirely until the layer was split out.
+
+### The model, opened
+
+Clicking the model unfolds its architecture above it. Two rules drive the
+layout, both in `sceneModel.ts`:
+
+**A block is drawn at the size of the thing it holds.** Edge length scales as
+`params ** 0.36`. Raw analytic counts span six orders of magnitude here — a
+1.27B token embedding against a 5,120-parameter RMSNorm — so a linear or
+square-root scale buries everything small. The exponent keeps ordering and
+ratio meaningful while the small parts stay legible, and every block is labelled
+with its true count so nothing is lost to the scaling.
+
+**Repetitive units wrap.** 64 transformer blocks drawn as 64 towers is an
+unreadable smear, so a repeat group becomes a near-square grid (64 → 8×8, 27
+vision blocks → 6×5) of unit boxes, each still sized by its own per-unit
+parameter count. The grid's footprint then encodes the count, which is the
+honest thing for a grid to encode. For `Qwen3.8-27B-INT4` that is 101 boxes:
+64 transformer + 27 vision + embedding + LM head + merger + patch embed + norms
+and markers.
+
+The two branches are stacked back to front — the vision branch behind, because
+the backend prepends it and it *feeds* the text stream. A dashed connector
+joins them, so the parallel rows do not read as unrelated.
+
+### Selection and the detail panel
+
+Clicking anything in the scene opens a panel that takes half the screen. The
+selected part stays highlighted and everything else dims. One `Sel` value drives
+both, so the panel and the diagram cannot disagree about what is selected.
+
+For a wrapped unit the panel opens the block's sub-layers (11 for a transformer
+block) with a proportional bar each, and — because this model interleaves linear
+and full attention — it reports *which kind of attention this particular unit
+has*, read from `meta.layer_types[unitIndex]`. Clicking unit 8 says "full
+attention"; unit 38 says "linear attention". Same weights, different layer.
+
+Opening the panel widens the page column from 760px to 1180px: split at the
+narrow width, the diagram scaled down to about 40% and became unreadable.
+
+### Notes from the build
+
+A few things were wrong in ways that only showed up on screen:
+
+- Caption positions were computed **twice** — once to render, once to size the
+  viewBox — and the two drifted. Captions were drawn at `z=0` while their boxes
+  sat at `z=archZ`, putting labels a long way below what they belonged to. There
+  is now one function, `layoutCaptions`, used by both.
+- Caption bounds were reserved with a guessed constant. An `end`-anchored
+  caption extends its **full** width to the left of its anchor, not half, which
+  clipped "reads the image · 27 blocks" off the edge. Widths are now computed
+  from the text.
+- Captions were sorted "longest last so they win" — which silently painted one
+  caption over another and hid the collision instead of revealing it.
+- Seating the tier by the tower's top-back corner left a dead gap; by its
+  bottom-front corner it buried the tower. It now sits a third of the way down
+  the tower's silhouette, overlapping the shoulder.
+- The back row's caption, anchored at its left end, landed in the same screen
+  patch as the front row's first component. Both captions were drawn there and
+  overprinted. Back-row captions are centred above their own row now.
 
 ## Information architecture (restructured)
 
@@ -454,6 +597,36 @@ cubes standing on it.
 Gaps widened (`G` 18 → 36, plate margin 26 → 34) so each caption sits on clear
 plate instead of on a neighbouring cube. Anchors: CPU above, RAM left, GPU
 right, VRAM below.
+
+### The stack grows when the engine starts
+
+Pressing **start engine** appends an engine tier above the hardware. The scene
+reserves that slot at all times, so starting the engine never resizes the
+diagram under the user — the layer simply appears in place.
+
+```
+                    ╱╌╌╌╌╌╌╌╲      engine tier — dashed, translucent:
+                  ╱  llama.cpp ╲    software sitting on hardware, not a part
+                 │ Qwen3.8-27B  │  → 128 tokens
+                 ╲     0 tokens ╱
+                  ╰╌╌╌╌╌╌╌╱
+
+                    ╱▔▔▔▔▔╲       CPU / GPU / RAM / VRAM on the HOST plate
+      ╱▔▔▔▔▔╲     ╱▔▔▔▔▔▔▔▔╲     ╱▔▔▔▔▔╲
+     │  RAM  │   ╱           ╲   │  GPU  │
+       ╲_____╱   ╲  ╱▔▔▔╲   ╱     ╲_____╱
+╱▔▔▔▔▔╔╔▔▔▔▔╔╔▔╔▔▔▔▔╔╔▔╔▔▔╔▔▔▔▔▔▔╔▔▔╲   VRAM
+    ╲  VRAM  ╱  ╚═════════╝  ╚══╝  ╲  HOST   ╱
+      ╲______╱ ╲____________________╱
+```
+
+The tier is drawn as a dashed, translucent outline rather than a solid cube: it
+is the inference engine running *on* the hardware, not a fifth component. It
+carries the engine name, the model it loaded, and the running token count.
+
+Geometry note: `iso(C, C, z)` projects onto the same screen point as
+`iso(0, 0, C)` when `z == 2C`, so the first attempt at a 34-unit clearance left
+the tier exactly touching the CPU cube. It sits at `z0 = 2C + 46` instead.
 
 ## How to extend
 - **New engine adapter**: subclass `_BaseAdapter` in `engines.py`, map its metric

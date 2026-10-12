@@ -98,6 +98,67 @@ def main():
             print("after expand nodes:", sub)
             pg.screenshot(path=str(SHOTS / "arch-expanded.png"))
 
+        # --- the scene: engine -> model -> architecture -> sub-layers ---
+        pg.click(".nav button:has-text('Start here')")
+        try:
+            pg.wait_for_selector("svg.scene-svg .tier-model", timeout=15000)
+        except Exception:
+            fails.append("scene: model block never rendered")
+            boxes = 0
+        else:
+            # hovering the tower lifts it clear of the hardware
+            pg.hover("svg.scene-svg .tier-model")
+            pg.wait_for_timeout(500)
+            if not pg.query_selector("svg.scene-svg g.upper.lifted"):
+                fails.append("scene: hovering the tower did not lift it")
+            pg.screenshot(path=str(SHOTS / "scene-lifted.png"))
+
+            # step off the tower and let it settle before clicking, the way a
+            # person would
+            pg.mouse.move(20, 20)
+            pg.wait_for_timeout(700)
+
+            # clicking the model unfolds the architecture
+            pg.click("svg.scene-svg .tier-model")
+            pg.wait_for_timeout(900)
+            boxes = pg.evaluate(
+                "() => document.querySelectorAll('svg.scene-svg .arch-boxes > g').length")
+            print("arch boxes:", boxes)
+            if boxes < 10:
+                fails.append(f"scene: architecture did not unfold ({boxes} boxes)")
+            if not pg.query_selector(".side-inner"):
+                fails.append("scene: detail panel did not open for the model")
+            else:
+                panel = pg.inner_text(".side-inner")
+                if "parameters" not in panel.lower():
+                    fails.append("scene: model panel missing its parameter count")
+            pg.screenshot(path=str(SHOTS / "scene-unfolded.png"))
+
+            # the model is a toggle: a second click folds the tier away again
+            pg.mouse.move(20, 20)
+            pg.wait_for_timeout(600)
+            pg.click("svg.scene-svg .tier-model")
+            pg.wait_for_timeout(600)
+            if pg.evaluate("() => document.querySelectorAll('svg.scene-svg .arch-boxes > g').length"):
+                fails.append("scene: clicking the model again did not fold the architecture")
+            # reopen for the sub-layer check
+            pg.mouse.move(20, 20)
+            pg.wait_for_timeout(600)
+            pg.click("svg.scene-svg .tier-model")
+            pg.wait_for_timeout(700)
+
+            # one unit of the wrapped repeat group opens its sub-layers
+            if pg.evaluate("() => document.querySelectorAll('svg.scene-svg .arch-boxes > g').length"):
+                pg.click("svg.scene-svg g[data-id='blocks#7']")
+                pg.wait_for_timeout(700)
+                panel = pg.inner_text(".side-inner")
+                if "UNIT 8 OF" not in panel.upper():
+                    fails.append(f"scene: unit panel wrong ({panel[:60]!r})")
+                for want in ("RMSNorm", "MLP"):
+                    if want not in panel:
+                        fails.append(f"scene: sub-layers missing {want}")
+                pg.screenshot(path=str(SHOTS / "scene-unit.png"))
+
         # Memory KV calc produces a number
         pg.click(".nav button:has-text('Memory')")
         pg.wait_for_timeout(1500)
