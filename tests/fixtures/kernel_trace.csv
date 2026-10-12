@@ -1,0 +1,6 @@
+Name,GrdX,GrdY,GrdZ,BlkX,BlkY,BlkZ,Start_Timestamp,End_Timestamp,Dispatch_ID
+gemm_q4_wmma_kernel_128x64_k32,128,1,1,32,1,1,1000000000,1000450000,1
+attn_fwd,16,1,64,1,1,1,1000500000,1000990000,2
+chunk_scaled_dot_kkt_fwd_kernel,8,1,1,64,1,1,1010000000,1010010000,3
+vectorized_elementwise_kernel,256,1,1,256,1,1,1010020000,1010025000,4
+MemoryCopy_API,1,1,1,1,1,1,1010030000,1010060000,5

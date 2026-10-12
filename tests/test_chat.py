@@ -1,0 +1,165 @@
+import pytest
+
+from inferscope.chat import ManagedServer, Turn, parse_prometheus, token_counters
+
+
+METRICS = """
+# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed
+# TYPE llamacpp:prompt_tokens_total counter
+llamacpp:prompt_tokens_total 59
+# HELP llamacpp:tokens_predicted_total Number of generation tokens processed
+# TYPE llamacpp:tokens_predicted_total counter
+llamacpp:tokens_predicted_total 28
+llamacpp:request_success_total{request_type="chat"} 3
+"""
+
+
+def test_parse_prometheus_skips_labelled_series():
+    m = parse_prometheus(METRICS)
+    assert m["llamacpp:prompt_tokens_total"] == 59
+    assert m["llamacpp:tokens_predicted_total"] == 28
+    # A labelled series is skipped rather than collapsed into the parent key,
+    # which would report one label set as if it were the total.
+    assert "llamacpp:request_success_total" not in m
+
+
+def test_token_counters():
+    c = token_counters(METRICS)
+    assert c == {"prompt_tokens": 59, "completion_tokens": 28}
+
+
+def test_token_counters_missing_is_zero_not_invented():
+    c = token_counters("# nothing here\n")
+    assert c == {"prompt_tokens": 0, "completion_tokens": 0}
+
+
+def test_turn_tok_per_s():
+    t = Turn(completion_tokens=28, total_ms=2000.0)
+    assert t.tok_per_s == pytest.approx(14.0)
+
+
+def test_turn_tok_per_s_none_without_tokens_or_time():
+    assert Turn(completion_tokens=0, total_ms=2000.0).tok_per_s is None
+    assert Turn(completion_tokens=10, total_ms=0).tok_per_s is None
+    assert Turn().tok_per_s is None
+
+
+def test_managed_server_argv_binds_loopback():
+    s = ManagedServer("/bin/llama-server", "/m/model.gguf", 8081, ctx=4096)
+    argv = s.argv()
+    assert argv[0] == "/bin/llama-server"
+    assert "--metrics" in argv
+    assert "127.0.0.1" in argv
+    assert argv[argv.index("--port") + 1] == "8081"
+    assert argv[argv.index("-c") + 1] == "4096"
+    assert s.base_url == "http://127.0.0.1:8081"
+
+
+def test_managed_server_not_running_before_start():
+    s = ManagedServer("/bin/llama-server", "/m/model.gguf", 8081)
+    assert s.running is False
+    st = s.status()
+    assert st["running"] is False and st["pid"] is None
+
+
+def test_managed_server_stop_without_start():
+    s = ManagedServer("/bin/llama-server", "/m/model.gguf", 8081)
+    assert s.stop() == {"stopped": False, "detail": "not running"}
+
+
+def test_status_is_honest_about_trace_scope():
+    s = ManagedServer("/bin/llama-server", "/m/model.gguf", 8081)
+    st = s.status()
+    assert st["kernel_trace"] == "not capturing"
+    assert st["per_turn_trace"] is False
+
+
+def test_profile_mode_wraps_server_in_rocprofv3():
+    s = ManagedServer("/bin/llama-server", "/m/model.gguf", 8081,
+                      profile=True, out_dir="/tmp/trace-out")
+    argv = s.argv()
+    assert argv[0] == "rocprofv3"
+    assert "--kernel-trace" in argv
+    # The server itself must remain the wrapped command.
+    inner = s.server_argv()
+    assert argv[-len(inner):] == inner
+
+
+def test_profile_mode_requires_out_dir():
+    s = ManagedServer("/bin/llama-server", "/m/model.gguf", 8081, profile=True)
+    try:
+        s.argv()
+    except ValueError as e:
+        assert "out_dir" in str(e)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_ptrace_capable_returns_reason_not_crash():
+    from inferscope.chat import ptrace_capable
+    ok, why = ptrace_capable()
+    assert isinstance(ok, bool)
+    assert isinstance(why, str) and why
+
+def test_port_in_use_detects_listener():
+    import socket
+    from inferscope.chat import port_in_use
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    port = s.getsockname()[1]
+    try:
+        assert port_in_use(port) is not None
+    finally:
+        s.close()
+    # A closed port must not be reported as busy.
+    assert port_in_use(port) is None
+
+
+def test_start_refuses_port_already_in_use():
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    port = s.getsockname()[1]
+    srv = ManagedServer("/bin/llama-server", "/m/model.gguf", port)
+    try:
+        srv.start("/tmp/should-not-be-used.log")
+        assert srv.proc is None
+        assert "already in use" in srv.error
+        assert "will not adopt" in srv.error
+    finally:
+        s.close()
+
+
+def test_status_surfaces_error():
+    s = ManagedServer("/bin/llama-server", "/m/model.gguf", 8081)
+    s.error = "boom"
+    assert s.status()["error"] == "boom"
+
+
+def test_tunnel_status_is_tri_state_not_a_guess():
+    """reachable must be True/False/None — never a fabricated False.
+
+    The pod has no hairpin route to its own public URL, so an HTTP self-probe
+    would always fail; status() therefore reports the frpc client's own state.
+    """
+    from inferscope import tunnel
+    st = tunnel.status()
+    assert st["reachable"] in (True, False, None)
+    assert isinstance(st["detail"], str) and st["detail"]
+
+
+def test_turn_exposes_reasoning_separately():
+    """A reasoning model streams thinking before any content. If that is not
+    surfaced, a short turn looks like the model said nothing."""
+    t = Turn(reasoning="The user asks about GPUs.")
+    d = t.as_dict()
+    assert d["reasoning"] == "The user asks about GPUs."
+    assert d["reasoning_only"] is True
+    assert d["text"] == ""
+
+
+def test_turn_with_content_is_not_reasoning_only():
+    t = Turn(text="GPUs are fast.", reasoning="thinking...")
+    assert t.as_dict()["reasoning_only"] is False

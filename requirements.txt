@@ -1,0 +1,13 @@
+# InferScope backend runtime deps. All are already present in /opt/venv on the
+# target host; this file documents the floor, it is not installed globally.
+# The app degrades gracefully if any optional one is missing (see `inferscope check`).
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+duckdb>=1.0
+pyarrow>=14
+psutil>=5.9
+prometheus-client>=0.19
+httpx>=0.27
+# optional, GPU only — absent => sysfs/rocm-smi fallback
+# amdsmi (ships with ROCm, imported at runtime, never required to boot)

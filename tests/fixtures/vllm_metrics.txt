@@ -1,0 +1,32 @@
+# HELP vllm:num_requests_running Number of requests currently running on GPU.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{model_name="demo"} 6.0
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{model_name="demo"} 3.0
+# HELP vllm:prompt_tokens Total number of prompt tokens.
+# TYPE vllm:prompt_tokens counter
+vllm:prompt_tokens_total{model_name="demo"} 12000
+# HELP vllm:generation_tokens Total number of generated tokens.
+# TYPE vllm:generation_tokens counter
+vllm:generation_tokens_total{model_name="demo"} 8000
+# HELP vllm:gpu_cache_usage GPU cache usage percentage.
+# TYPE vllm:gpu_cache_usage gauge
+vllm:gpu_cache_usage{model_name="demo"} 0.42
+# HELP vllm:num_preemptions Cumulative number of preemptions.
+# TYPE vllm:num_preemptions counter
+vllm:num_preemptions_total{model_name="demo"} 1
+# HELP vllm:time_to_first_token_seconds Histogram of TTFT.
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{model_name="demo",le="0.1"} 2
+vllm:time_to_first_token_seconds_bucket{model_name="demo",le="+Inf"} 10
+vllm:time_to_first_token_seconds_sum{model_name="demo"} 3.75
+vllm:time_to_first_token_seconds_count{model_name="demo"} 10
+# HELP vllm:inter_token_latency_seconds Histogram of inter-token latency.
+# TYPE vllm:inter_token_latency_seconds histogram
+vllm:inter_token_latency_seconds_sum{model_name="demo"} 25.0
+vllm:inter_token_latency_seconds_count{model_name="demo"} 8000
+# HELP vllm:e2e_request_latency_seconds Histogram of request latency.
+# TYPE vllm:e2e_request_latency_seconds histogram
+vllm:e2e_request_latency_seconds_sum{model_name="demo"} 140.0
+vllm:e2e_request_latency_seconds_count{model_name="demo"} 10
