@@ -25,8 +25,8 @@
  * (macOS-dock style) pulls it clear when you want to see what is underneath.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { Box, Ground, Bounds, iso, depth } from "./iso";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Box, Ground, Bounds, iso, depth, type P } from "./iso";
 import { fmtParams } from "./sceneModel";
 import { layoutUnit, useStackAnimation, type Unit, type StackBlock } from "./unitModel";
 import type { ArchGraph, ArchNode, Sel } from "./archTypes";
@@ -50,6 +50,10 @@ const LIFT = 86;                 // hover rise, in world units of z
 
 /** how far the tower rises on hover, in *screen* px (1 world z unit = 1 px) */
 export const TOWER_LIFT = LIFT;
+
+/* Where the empty-state caption sits: high enough to clear the CPU caption,
+ * which occupies roughly y -53..-25 around the plate centre. */
+const EMPTY_AT: P = iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z + TOWER_H + 46);
 
 type Art = { cells: { u: number; v: number; w: number; h: number }[]; stripe?: { v: number; h: number } };
 
@@ -160,6 +164,40 @@ function HardwareCaption({ node, at, dim }:
       <text x={at[0]} y={at[1]} textAnchor="middle" className="cap-s halo">{node.caption}</text>
     </g>
   );
+}
+
+/**
+ * Animate the viewBox towards a new extent.
+ *
+ * The scene used to reserve the full tower height unconditionally, so with
+ * nothing loaded the diagram was a small plate adrift in a box sized for a model
+ * that was not there — ~320 world units of nothing. Animating the viewBox
+ * instead makes the box visibly grow to make room for an incoming model, which
+ * is both the fix and the nicest part of the load.
+ */
+function useTweenedViewBox(target: number[], ms = 480): number[] {
+  const [cur, setCur] = useState<number[]>(target);
+  const from = useRef<number[]>(target);
+  const raf = useRef(0);
+  const key = target.join(",");
+  useEffect(() => {
+    const b = key.split(",").map(Number);
+    const a = from.current;
+    if (a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 0.5)) return;
+    if (typeof requestAnimationFrame === "undefined") { from.current = b; setCur(b); return; }
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const k = Math.min(1, (t - t0) / ms);
+      const e = 1 - Math.pow(1 - k, 3);              // easeOutCubic
+      const next = a.map((v, i) => v + (b[i] - v) * e);
+      setCur(next);
+      if (k < 1) { raf.current = requestAnimationFrame(step); from.current = next; }
+      else from.current = b;
+    };
+    raf.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf.current);
+  }, [key, ms]);
+  return cur;
 }
 
 /* ------------------------------------------------------------------ */
@@ -287,8 +325,10 @@ export function HostScene(props: HostSceneProps) {
   const blocks = layoutUnit(unit && unit.engine === "llm"
     ? { ...unit, params: unit.params || params } : unit);
 
-  // Reserve the space the tower occupies both at rest and lifted, so hovering
-  // never resizes the diagram.
+  // Bounds are state-dependent: with nothing loaded the box is sized to the
+  // plate, the hardware and the empty-state caption only. Reserving the tower
+  // unconditionally left ~320 world units of blank space above a diagram that
+  // was only using the bottom third of its box.
   const b = new Bounds();
   for (const zz of [0, C]) {
     b.addP(iso(PX0, PY0, zz)); b.addP(iso(PX1, PY0, zz));
@@ -297,20 +337,30 @@ export function HostScene(props: HostSceneProps) {
   for (const c of cells) {
     b.label(captionAt(c.anchor, c.x, c.y), 86, c.anchor === "below" ? 10 : 40, 20);
   }
-  for (const zz of [TOWER_Z, TOWER_Z + 2 * TOWER_H + LIFT]) {
-    b.addP(iso(PX0, PY0, zz)); b.addP(iso(PX1, PY0, zz));
-    b.addP(iso(PX1, PY1, zz)); b.addP(iso(PX0, PY1, zz));
-  }
-  for (const zz of [TOWER_Z + TOWER_H / 2, TOWER_Z + 1.5 * TOWER_H]) {
-    const at = iso(PX1, PY0, zz);
-    b.add(at[0] + 14, at[1] - 16);
-    b.add(at[0] + 14 + 200, at[1] + 22);
-  }
   const hostLabel = iso(PX1, PY1, 0);
   b.label(hostLabel, 60, 0, 34);
 
-  // Anything selected inside the model still belongs to the model, so the model
-  // slab stays lit and everything else recedes.
+  if (unit) {
+    // the stack, at rest and lifted on hover
+    for (const zz of [TOWER_Z, TOWER_Z + 2 * TOWER_H + LIFT]) {
+      b.addP(iso(PX0, PY0, zz)); b.addP(iso(PX1, PY0, zz));
+      b.addP(iso(PX1, PY1, zz)); b.addP(iso(PX0, PY1, zz));
+    }
+    for (const zz of [TOWER_Z + TOWER_H / 2, TOWER_Z + 1.5 * TOWER_H]) {
+      const at = iso(PX1, PY0, zz);
+      b.add(at[0] + 14, at[1] - 18); b.add(at[0] + 214, at[1] + 24);
+    }
+  } else {
+    // just the empty-state caption's own headroom
+    b.add(EMPTY_AT[0] - 190, EMPTY_AT[1] - 26);
+    b.add(EMPTY_AT[0] + 190, EMPTY_AT[1] + 30);
+  }
+
+  const [vx, vy, vw, vh] = useTweenedViewBox([
+    b.x0 - 16, b.y0 - 16, b.x1 - b.x0 + 32, b.y1 - b.y0 + 32,
+  ]);
+  const vb = `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`;
+
   const inModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
   const hwDim = sel != null && sel.kind !== "host" && !inModel;
 
@@ -337,7 +387,7 @@ export function HostScene(props: HostSceneProps) {
   }, []);
 
   return (
-    <svg className="tree-svg scene-svg" viewBox={b.viewBox(16)} role="img"
+    <svg className="tree-svg scene-svg" viewBox={vb} role="img"
       aria-label={unit
         ? `Host hardware with ${unit.engine_label} running ${unit.model_label}`
         : "Host hardware, with no engine loaded"}
@@ -362,14 +412,10 @@ export function HostScene(props: HostSceneProps) {
           so without a word here the diagram just looks broken. */}
       {!unit ? (
         <g className="stack-empty">
-          <text x={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[0]}
-            y={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[1] + 4}
-            textAnchor="middle" className="stack-empty-t">nothing loaded</text>
-          <text x={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[0]}
-            y={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[1] + 20}
-            textAnchor="middle" className="stack-empty-s">
-            the GPU is free — pick an engine and a model below
-          </text>
+          <text x={EMPTY_AT[0]} y={EMPTY_AT[1] - 8} textAnchor="middle"
+            className="stack-empty-t">nothing loaded</text>
+          <text x={EMPTY_AT[0]} y={EMPTY_AT[1] + 12} textAnchor="middle"
+            className="stack-empty-s">the GPU is free — pick an engine and a model below</text>
         </g>
       ) : null}
 
