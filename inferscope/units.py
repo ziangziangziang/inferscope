@@ -139,6 +139,15 @@ def discover(cfg, specs) -> list[Unit]:
                 full = os.path.join(models_dir, name)
                 if _match(full, spec.key) and os.path.exists(full):
                     candidates.append(full)
+        # An engine whose patterns are all file extensions wants files. The
+        # configured model may be the directory that holds them, and listing
+        # both puts "tts" and "en_US-lessac-medium.onnx" in the picker as two
+        # rival models when they are one thing.
+        file_only = all(pat.startswith("*.") for pat in PATTERNS.get(spec.key, ()))
+        if file_only:
+            candidates = [c for c in candidates
+                          if os.path.isfile(c) or not os.path.isdir(c)]
+
         # de-duplicate while preserving order
         uniq: list[str] = []
         for c in candidates:

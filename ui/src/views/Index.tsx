@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../state";
 import { useGpu } from "../gpuState";
 import { InputBox, describeAccepts } from "../components/InputBox";
+import { ResultOut } from "../components/ResultOut";
+import { ttsSynthesize, imageGenerate, type TtsResult, type ImageResult } from "../lib/api";
 import { api, chatSend, type ChatState, type SampleRow } from "../lib/api";
 import { HostScene, type Node } from "../components/Scene";
 import { SceneDetail } from "../components/SceneDetail";
@@ -30,6 +32,8 @@ export function Index({ onOpen, onOpenDetails }: {
   const [live, setLive] = useState<SampleRow | null>(null);
   const [prompt, setPrompt] = useState("");
   const [pendingImage, setPendingImage] = useState<string | null>(null);
+  const [audio, setAudio] = useState<TtsResult | null>(null);
+  const [picture, setPicture] = useState<ImageResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [leaves, setLeaves] = useState<string[]>([]);
   const [text, setText] = useState("");
@@ -89,6 +93,35 @@ export function Index({ onOpen, onOpenDetails }: {
   // Whether the detail panel is showing the model itself. The scene stays the
   // overview either way; the architecture lives in the panel.
   const inModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
+
+  // One submit, routed by what the model accepts. The box is uniform; what
+  // happens when you press the button is the engine's business.
+  const runInput = useCallback(async () => {
+    const engine = activeUnit?.engine;
+    if (!engine || inputDisabled) return;
+    setTurnErr(null);
+    if (engine === "tts") {
+      setBusy(true);
+      try {
+        const r = await ttsSynthesize(prompt);
+        setAudio((prev) => { if (prev) URL.revokeObjectURL(prev.url); return r; });
+        setPicture(null);
+      } catch (e) { setTurnErr(String((e as Error)?.message ?? e)); }
+      finally { setBusy(false); setPrompt(""); }
+      return;
+    }
+    if (engine === "image") {
+      setBusy(true);
+      try {
+        const r = await imageGenerate(prompt);
+        setPicture(r);
+      } catch (e) { setTurnErr(String((e as Error)?.message ?? e)); }
+      finally { setBusy(false); }
+      return;
+    }
+    if (engine === "asr") return;            // the audio slot owns its own action
+    await grow();
+  }, [activeUnit, inputDisabled, prompt, grow]);
 
   const pick = (s: NonNullable<Sel>) => {
     onOpenDetails?.();
@@ -281,12 +314,14 @@ export function Index({ onOpen, onOpenDetails }: {
           reason={inputReason}
           value={prompt}
           onChange={setPrompt}
-          onSubmit={() => { if (!accepts.includes("audio")) void grow(); }}
+          onSubmit={() => void runInput()}
           busy={busy}
           image={pendingImage}
           onImage={setPendingImage}
           audioSlot={<AsrTask loaded={resident === "asr"} embedded />}
         />
+
+        <ResultOut audio={audio} image={picture} />
       </div>
 
       {turnErr && <div className="notice bad mb">{turnErr}</div>}

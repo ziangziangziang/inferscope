@@ -65,9 +65,14 @@ def serve(port: int) -> ThreadingHTTPServer:
     return httpd
 
 
+#: response headers the app reads off an engine call; they carry the measured
+#: timings and the sample rate, so the proxy has to pass them through
+FORWARD_HEADERS = ("x-engine-seconds", "x-sample-rate", "content-disposition")
+
+
 def fetch_remote(url: str, timeout: int = 45, method: str = "GET",
                  body: bytes | None = None,
-                 content_type: str = "") -> tuple[int, bytes, str]:
+                 content_type: str = "") -> tuple[int, bytes, str, dict]:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -77,9 +82,12 @@ def fetch_remote(url: str, timeout: int = 45, method: str = "GET",
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-            return r.status, r.read(), r.headers.get("content-type", "application/json")
+            extra = {k: r.headers[k] for k in FORWARD_HEADERS if k in r.headers}
+            return (r.status, r.read(),
+                    r.headers.get("content-type", "application/json"), extra)
     except urllib.error.HTTPError as e:
-        return e.code, e.read(), "application/json"
+        extra = {k: e.headers[k] for k in FORWARD_HEADERS if k in e.headers}
+        return e.code, e.read(), "application/json", extra
 
 
 def find_browser() -> str | None:
@@ -172,7 +180,7 @@ def main() -> None:
                 # post_data alone returns null for them.
                 raw = getattr(req, "post_data_buffer", None)
                 payload = bytes(raw) if raw else req.post_data
-                st, body, ct = fetch_remote(
+                st, body, ct, extra = fetch_remote(
                     base + path,
                     method=req.method,
                     body=payload,
@@ -181,7 +189,7 @@ def main() -> None:
                 errors.append(f"fetch {path}: {e}")
                 return route.fulfill(status=200, body="{}",
                                       content_type="application/json")
-            return route.fulfill(status=st, body=body, content_type=ct)
+            return route.fulfill(status=st, body=body, content_type=ct, headers=extra)
           except Exception:                                  # noqa: BLE001
             return route.fulfill(status=200, body="{}",
                                  content_type="application/json")

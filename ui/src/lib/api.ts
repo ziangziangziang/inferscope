@@ -128,6 +128,46 @@ export const engineLoad = (key: string) =>
   post<LoadResult>(`/api/engines/${encodeURIComponent(key)}/load`);
 export const engineOffload = () => post<LoadResult>("/api/engines/offload");
 
+export interface TtsResult {
+  url: string;           // object URL for the returned WAV
+  bytes: number;
+  engine_s: number;
+  sample_rate: number;
+}
+
+/** POST /api/tts/synthesize and hand back something playable. */
+export async function ttsSynthesize(text: string): Promise<TtsResult> {
+  const r = await fetch("/api/tts/synthesize", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!r.ok) throw new Error((await r.text().catch(() => "")).slice(0, 200) || "tts failed");
+  const blob = await r.blob();
+  return {
+    url: URL.createObjectURL(blob),
+    bytes: blob.size,
+    engine_s: Number(r.headers.get("X-Engine-Seconds") ?? 0),
+    sample_rate: Number(r.headers.get("X-Sample-Rate") ?? 0),
+  };
+}
+
+export interface ImageResult {
+  image: string;         // data URL
+  engine_s: number;
+  steps: number;
+  prompt: string;
+}
+
+/** POST /api/image/generate and return the rendered picture. */
+export async function imageGenerate(prompt: string, steps = 4): Promise<ImageResult> {
+  const r = await fetch("/api/image/generate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, steps }),
+  });
+  if (!r.ok) throw new Error((await r.text().catch(() => "")).slice(0, 200) || "image failed");
+  return r.json();
+}
+
 export async function asrTranscribe(file: File): Promise<AsrResult> {
   const fd = new FormData();
   fd.append("file", file, file.name);

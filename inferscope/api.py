@@ -12,6 +12,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -189,6 +190,24 @@ def _multipart(fields: dict) -> tuple[bytes, str]:
             out += str(val).encode() + b"\r\n"
     out += f"--{boundary}--\r\n".encode()
     return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
+def raw_rate(audio: bytes) -> str:
+    """Sample rate out of a WAV header, without parsing the whole file."""
+    if len(audio) >= 28 and audio[:4] == b"RIFF":
+        try:
+            return str(int.from_bytes(audio[24:28], "little"))
+        except Exception:                                   # noqa: BLE001
+            pass
+    return ""
+
+
+def _http_post_raw(url: str, body: bytes, content_type: str, timeout: float):
+    """POST bytes and return (status, raw-bytes, content-type)."""
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": content_type})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read(), r.headers.get("content-type", "")
 
 
 def _http_post(url: str, body: bytes, content_type: str, timeout: float):
@@ -568,6 +587,63 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
     async def engine_offload():
         async with state.engine_lock:
             return await asyncio.to_thread(state.engine_ctl.offload)
+
+    @app.post("/api/tts/synthesize")
+    async def tts_synthesize(req: Request):
+        """Turn text into speech with whatever engine is resident.
+
+        Refuses when nothing is loaded, for the same reason the ASR endpoint
+        does: starting an engine behind the user's back would evict whatever
+        they were already measuring.
+        """
+        if state.engine_ctl.loaded != "tts":
+            raise HTTPException(409, "the TTS engine is not loaded — load it first")
+        body = await req.json()
+        text = (body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "text is required")
+        spec = state.engine_ctl.spec("tts")
+        t0 = time.perf_counter()
+        try:
+            st, raw, _ = await asyncio.to_thread(_http_post_raw,
+                                                 spec.base_url + "/synthesize",
+                                                 json.dumps({"text": text}).encode(),
+                                                 "application/json", 300.0)
+        except Exception as e:                              # noqa: BLE001
+            raise HTTPException(502, f"TTS engine failed: {e}")
+        if st >= 400:
+            raise HTTPException(502, f"TTS engine returned {st}: {raw[:200]}")
+        audio_s = time.perf_counter() - t0
+        return Response(content=raw, media_type="audio/wav", headers={
+            "X-Engine-Seconds": f"{audio_s:.4f}",
+            "X-Sample-Rate": raw_rate(raw),
+        })
+
+    @app.post("/api/image/generate")
+    async def image_generate(req: Request):
+        """Render a picture from a prompt with the resident image engine."""
+        if state.engine_ctl.loaded != "image":
+            raise HTTPException(409, "the image engine is not loaded — load it first")
+        body = await req.json()
+        prompt = (body.get("prompt") or "").strip()
+        if not prompt:
+            raise HTTPException(400, "prompt is required")
+        spec = state.engine_ctl.spec("image")
+        steps = int(body.get("steps") or 4)
+        t0 = time.perf_counter()
+        try:
+            st, raw, _ = await asyncio.to_thread(_http_post_raw,
+                                                 spec.base_url + "/generate",
+                                                 json.dumps({"prompt": prompt,
+                                                             "steps": steps}).encode(),
+                                                 "application/json", 900.0)
+        except Exception as e:                              # noqa: BLE001
+            raise HTTPException(502, f"image engine failed: {e}")
+        if st >= 400:
+            raise HTTPException(502, f"image engine returned {st}: {raw[:200]}")
+        engine_s = time.perf_counter() - t0
+        return JSONResponse({"image": "data:image/png;base64," + base64.b64encode(raw).decode(),
+                             "engine_s": engine_s, "steps": steps, "prompt": prompt})
 
     @app.post("/api/asr/transcribe")
     async def asr_transcribe(req: Request):

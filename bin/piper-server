@@ -1,0 +1,11 @@
+#!/bin/sh
+# piper as an engine process.
+#
+# enginectl launches engines as "<binary> --model <path> --port <n>", which is
+# right for a native binary but not for a Python module. This wrapper is the
+# binary: it fixes the module and the import path, then passes the arguments
+# through untouched.
+set -e
+cd /workspace/inferscope
+export PYTHONPATH=/workspace/inferscope
+exec /opt/venv/bin/python -m inferscope.tts_server "$@"
