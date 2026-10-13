@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../state";
+import { useGpu } from "../gpuState";
 import { api, chatSend, type ChatState, type SampleRow } from "../lib/api";
 import { HostScene, type Node } from "../components/Scene";
 import { SceneDetail } from "../components/SceneDetail";
 import { toArch, type Sel } from "../components/archTypes";
 import { Info } from "../components/Info";
-import { ResidentStrip, useEngineStatus } from "../components/EngineRail";
 import { AsrTask } from "../components/tasks/AsrTask";
-import { UnitPicker, useSwapEngine } from "../components/UnitPicker";
-import { units as fetchUnits, engineOffload, type UnitInfo } from "../lib/api";
 
 /**
  * The front door.
@@ -21,119 +19,61 @@ import { units as fetchUnits, engineOffload, type UnitInfo } from "../lib/api";
  * Starting the engine and talking to it both happen here, so the diagram fills
  * in without anyone having to go looking for another page.
  */
-export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") => void }) {
+export function Index({ onOpen, onOpenDetails }: {
+  onOpen: (view: "run" | "analyze" | "arch") => void;
+  /** Clicking a result opens the details panel, which is where the rest of
+   *  the app's sections now live. */
+  onOpenDetails?: () => void;
+}) {
   const { health } = useApp();
   const [live, setLive] = useState<SampleRow | null>(null);
-  const [chat, setChat] = useState<ChatState | null>(null);
-  const [starting, setStarting] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [leaves, setLeaves] = useState<string[]>([]);
   const [text, setText] = useState("");
   const [think, setThink] = useState("");
-  const [err, setErr] = useState<string | null>(null);
+  const [turnErr, setTurnErr] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
 
   /* --- model architecture, for the scene --------------------------- */
   const [sel, setSel] = useState<Sel>(null);
   const [arch, setArch] = useState<ReturnType<typeof toArch>>(null);
 
-  // Engine load/offload lives on this page: one place to drive the machine.
-  const { status: engStatus, refresh: refreshEngines } = useEngineStatus();
-  const resident = engStatus?.loaded ?? null;
+  // Engine, model and residency are owned by the frame now (the left rail's
+  // configurable panel sets them), so the scene just reads the same state.
+  const g = useGpu();
+  const {
+    chosen, swap, resident, chat, running, server, starting, err,
+    shownEngine, setChosen, toggleEngine,
+  } = g;
 
-  // The catalogue of (engine, model) pairs, and the swap that drives the scene.
-  const [catalogue, setCatalogue] = useState<UnitInfo[]>([]);
-  const { swap, swapTo } = useSwapEngine();
-  useEffect(() => {
-    let dead = false;
-    const tick = () => fetchUnits()
-      .then((c) => { if (!dead) setCatalogue(c.units); })
-      .catch(() => {});
-    tick();
-    const id = setInterval(tick, 6000);
-    return () => { dead = true; clearInterval(id); };
-  }, []);
-
-  // The unit the scene draws.
-  //
-  // It follows the user's *choice*, not the boot completing: a whisper.cpp load
-  // takes ~20s, and tying the scene to `resident` left the plate bare for the
-  // whole of it, so there was nothing for the load animation to animate.
-  const [chosen, setChosen] = useState<UnitInfo | null>(null);
-  const withParams = (u: UnitInfo) => ({
-    ...u,
-    params: u.engine === "llm"
-      ? (arch?.nodes ?? []).reduce((a, n) => a + (n.params ?? 0), 0)
-      : u.params,
-  });
-  // Residency has two owners: enginectl owns everything it starts, and chat.py
-  // owns the language-model server. The scene has to see both, or the plate
-  // shows nothing while llama.cpp is happily running.
-  const effectiveResident = resident ?? ((chat?.ready || chat?.server?.running) ? "llm" : null);
-  const residentUnit = effectiveResident
-    ? catalogue.find((x) => x.engine === effectiveResident) : null;
+  // The scene draws the chosen unit, or whatever is resident if nothing is
+  // chosen. Parameter counts for the language model come from the loaded
+  // architecture, which only this view fetches.
   const activeUnit = useMemo(() => {
-    if (chosen) return withParams(chosen);
-    if (residentUnit) return withParams(residentUnit);
-    return null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chosen, residentUnit, arch]);
+    const u = g.activeUnit;
+    if (!u) return null;
+    return u.engine === "llm"
+      ? { ...u, params: (arch?.nodes ?? []).reduce((a, n) => a + (n.params ?? 0), 0) }
+      : u;
+  }, [g.activeUnit, arch]);
 
-  // once the engine we asked for is actually up, stop tracking the intent
-  useEffect(() => {
-    if (chosen && resident === chosen.engine) setChosen(null);
-  }, [resident, chosen]);
-
-  const shownEngine = effectiveResident ?? chosen?.engine ?? null;
-
-  // The language engine is the only one with a chat surface, and the only one
-  // whose architecture is worth describing in layers.
   const llmUnit = activeUnit?.engine === "llm" ? activeUnit : null;
+  const inputHint = g.inputHint;
 
-  // What the input row below is waiting for. Every model needs an input, but
-  // the shape of it belongs to the engine.
-  const inputHint = llmUnit ? "words in, tokens out"
-    : shownEngine === "asr" ? "audio in, text out"
-    : shownEngine ? "not wired up yet"
-    : "pick an engine above";
-
-  const pickUnit = async (u: UnitInfo) => {
-    setErr(null);
-    setChosen(u);
-    try {
-      if (u.managed) {
-        await swapTo(u);
-      } else {
-        // The language engine lives outside enginectl, so free the card and
-        // start it through its own endpoint — otherwise picking the model the
-        // whole page is about would fail with "unknown engine: llm".
-        await engineOffload();
-        setStarting(true);
-        try {
-          await api.chatStartServer(false);
-        } finally {
-          setStarting(false);
-        }
-        api.chatState().then(setChat).catch(() => {});
-      }
-    } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
-      setChosen(null);
-    } finally {
-      refreshEngines();
-    }
-  };
 
   // Whether the detail panel is showing the model itself. The scene stays the
   // overview either way; the architecture lives in the panel.
   const inModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
 
-  const pick = (s: NonNullable<Sel>) => setSel((cur) => {
-    // clicking the model a second time folds the architecture back away
-    if (s.kind === "model" && cur?.kind === "model") return null;
-    return s;
-  });
+  const pick = (s: NonNullable<Sel>) => {
+    onOpenDetails?.();
+    setSel((cur) => {
+      // clicking the model a second time folds the architecture back away
+      if (s.kind === "model" && cur?.kind === "model") return null;
+      return s;
+    });
+  };
   // Counted in a ref: the catch handler closes over the state from the render
   // that started the turn, so reading state there would always report 0.
   const got = useRef(0);
@@ -148,17 +88,7 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
     return () => clearInterval(id);
   }, [liveSid]);
 
-  useEffect(() => {
-    const tick = () => api.chatState().then(setChat).catch(() => {});
-    tick();
-    const id = setInterval(tick, 5000);
-    return () => clearInterval(id);
-  }, []);
-
   useEffect(() => () => abort.current?.abort(), []);
-
-  const running = !!chat?.ready;
-  const server = chat?.server;
 
   // `api.models()` lists the GGUF files that exist *on disk*, which is not the
   // same as the model in play: with whisper.cpp loaded it still happily returned
@@ -205,23 +135,6 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         ? `${(live.vram_used_bytes / 2 ** 30).toFixed(1)} GiB used` : "idle" },
   ];
 
-  async function toggleEngine() {
-    setErr(null);
-    if (running) {
-      await api.chatStopServer().catch((e) => setErr(String(e)));
-      setLeaves([]); setText("");
-      return;
-    }
-    setStarting(true);
-    try {
-      await api.chatStartServer(false);
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setStarting(false);
-    }
-    api.chatState().then(setChat).catch(() => {});
-  }
 
   async function grow() {
     const q = prompt.trim() || "Tell me what a GPU is.";
@@ -243,7 +156,7 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
           const s = String(d);
           setThink((t) => t + s);
           if (s.trim()) { got.current += 1; setLeaves((l) => [...l, s]); }
-        } else if (kind === "error") setErr(String(d.message ?? ""));
+        } else if (kind === "error") setTurnErr(String(d.message ?? ""));
       },
       ac.signal,
     ).catch((e) => {
@@ -251,7 +164,7 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         // A long stream can be cut by the tunnel mid-answer. Whatever arrived is
         // already on screen, so say that rather than implying nothing happened.
         const partial = got.current;
-        setErr(partial > 0
+        setTurnErr(partial > 0
           ? `connection dropped after ${partial} tokens — showing what arrived`
           : `chat failed: ${(e as Error)?.message ?? e}`);
       }
@@ -296,7 +209,7 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
                 engineIsLlm={!!llmUnit}
                 running={running} tokens={leaves.length}
                 port={(() => {
-                  const e = (engStatus?.engines ?? []).find((x) => x.key === activeUnit?.engine);
+                  const e = (g.status?.engines ?? []).find((x) => x.key === activeUnit?.engine);
                   return e?.port ? `127.0.0.1:${e.port}` : undefined;
                 })()}
                 onSelect={pick} onClose={() => setSel(null)} />
@@ -305,19 +218,8 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         </div>
       </div>
 
-      <div className="pick-wrap">
-        <div className="scene-title">
-          choose what should be on the GPU — an engine and one of its models
-          <span className="scene-key">the blocks above follow this choice</span>
-        </div>
-        <UnitPicker catalogue={catalogue} resident={shownEngine} onPick={pickUnit}
-          swap={swap} disabled={swap.phase !== "idle"} />
-      </div>
-
-      <ResidentStrip status={engStatus} unit={activeUnit}
-        llmRunning={!!chat?.ready || !!chat?.server?.running}
-        onChanged={refreshEngines}
-        onOffloaded={() => { setChosen(null); refreshEngines(); }} />
+      {/* The engine and model picker used to sit here. It is in the left rail
+       * now, so it stays reachable from every page instead of only this one. */}
 
       {/* Every model needs an input. What that input *is* depends on the
        * engine — words for a language model, audio for speech recognition, a
@@ -386,7 +288,7 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         )}
       </div>
 
-      {err && <div className="notice bad mb">{err}</div>}
+      {turnErr && <div className="notice bad mb">{turnErr}</div>}
       {think && <div className="index-think">
         <b>thinking</b> {think}
       </div>}

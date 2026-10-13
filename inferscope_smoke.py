@@ -30,6 +30,14 @@ def find_browser():
     return None
 
 
+def open_details(pg):
+    """The sections moved out of the left rail into a details panel, which is
+    closed by default. Open it before clicking a section link."""
+    if not pg.query_selector('[data-testid="details-panel"]'):
+        pg.click(".nav button.nav-details")
+        pg.wait_for_selector('[data-testid="details-panel"]', timeout=8000)
+
+
 def main():
     SHOTS.mkdir(exist_ok=True, parents=True)
     errs, pageerrs, fails = [], [], []
@@ -49,7 +57,13 @@ def main():
 
         for view in VIEWS:
             try:
-                pg.click(f".nav button:has-text('{ {'index':'Start here','machine':'Status','run':'Run & capture','analyze':'Analyze','arch':'Architecture','memory':'Memory & KV','mm':'Multimodal'}[view] }')", timeout=8000)
+                if view == "index":
+                    # Start here is the one item still in the rail; everything
+                    # else moved into the details panel.
+                    pg.click(".nav button:has-text('Start here')", timeout=8000)
+                else:
+                    open_details(pg)
+                    pg.click(f"[data-testid='details-panel'] button:has-text('{ {'machine':'Status','run':'Run & capture','analyze':'Analyze','arch':'Architecture','memory':'Memory & KV','mm':'Multimodal'}[view] }')", timeout=8000)
             except Exception as e:
                 fails.append(f"{view}: nav click failed {str(e)[:60]}"); continue
             READY = {
@@ -73,7 +87,8 @@ def main():
             print(f"{view:14} text={len(txt)}")
 
         # Architecture interactions
-        pg.click(".nav button:has-text('Architecture')")
+        open_details(pg)
+        pg.click("[data-testid='details-panel'] button:has-text('Architecture')")
         try:
             pg.wait_for_selector("svg.graph .node", timeout=15000)
         except Exception:
@@ -138,8 +153,17 @@ def main():
             pg.wait_for_timeout(700)
 
             # clicking the model unfolds the architecture
-            pg.click("svg.scene-svg .tier-model")
-            pg.wait_for_timeout(900)
+            # clicking the model unfolds the architecture. It is a toggle, and
+            # the diagram arrives from two chained requests (which model, then
+            # its architecture), so: click, wait, and click once more if the
+            # first click landed on an already-open panel.
+            for _ in range(2):
+                pg.click("svg.scene-svg .tier-model")
+                try:
+                    pg.wait_for_selector(".arch-svg .arch-boxes > g", timeout=12000)
+                    break
+                except Exception:
+                    pass
             boxes = pg.evaluate(
                 "() => document.querySelectorAll('.arch-svg .arch-boxes > g').length")
             print("arch boxes:", boxes)
@@ -291,7 +315,8 @@ def main():
                 fails.append("index: blocks still drawn after offload")
 
         # Memory KV calc produces a number
-        pg.click(".nav button:has-text('Memory')")
+        open_details(pg)
+        pg.click("[data-testid='details-panel'] button:has-text('Memory')")
         pg.wait_for_timeout(1500)
         mt = pg.inner_text(".main")
         if "GiB" not in mt:

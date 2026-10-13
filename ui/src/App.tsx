@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "./state";
 import { PROV_LABEL } from "./lib/format";
 import { Info } from "./components/Info";
@@ -15,6 +15,8 @@ import { Machine } from "./views/Machine";
 import { ModelSection, useModelTab } from "./views/ModelSection";
 import { Chat } from "./views/Chat";
 import { Index } from "./views/Index";
+import { GpuProvider } from "./gpuState";
+import { GpuPanel } from "./components/GpuPanel";
 
 /**
  * Four sections, ordered as the workflow actually runs:
@@ -34,7 +36,12 @@ export function App() {
   // Land on the index: it explains what this is before asking anything of you.
   const [view, setView] = useState<View>("index");
   const [modelTab, setModelTab] = useModelTab();
-  const { health, sessions, sessionId, setSessionId, isDemo, error } = useApp();
+  const { health, sessions, sessionId, setSessionId, isDemo, error, sel } = useApp();
+
+  // The sections that used to line the left rail now live in a details panel,
+  // which opens when you click a result rather than sitting there permanently.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const openDetails = () => setDetailsOpen(true);
 
   const gpu = health?.collectors?.gpu;
   const go = (v: View) => {
@@ -44,8 +51,12 @@ export function App() {
     setView(v);
   };
 
+  const picked = !!(sel.node || sel.edge || sel.event || sel.stepIdx != null);
+  useEffect(() => { if (picked) setDetailsOpen(true); }, [picked]);
+
   return (
-    <div className="app">
+    <GpuProvider>
+    <div className={"app" + (detailsOpen ? " with-details" : "")}>
       <div className="topbar">
         <span className="brand" title={`InferScope — inference observability workbench, v${health?.version}`}>
           INFER<b>SCOPE</b></span>
@@ -76,37 +87,54 @@ export function App() {
       </div>
 
       <nav className="nav">
-        <NavBtn id="index" view={view} go={go} icon="◍" label="Start here" />
+        <button className={view === "index" ? "active" : ""} onClick={() => go("index")}>
+          <span className="ic">◍</span>Start here
+        </button>
 
-        <Section label="produce" />
-        <NavBtn id="run" view={view} go={go} icon="✦" label="Run & capture" />
+        <GpuPanel />
 
-        <Section label="understand" />
-        <NavBtn id="analyze" view={view} go={go} icon="◧" label="Analyze" />
-
-        <Section label="reference" />
-        <NavBtn id="arch" view={view} go={go} icon="⌗" label="Architecture" sub />
-        <NavBtn id="memory" view={view} go={go} icon="▤" label="Memory & KV" sub />
-        <NavBtn id="mm" view={view} go={go} icon="◈" label="Multimodal" sub />
-
-        <Section label="machine" />
-        <NavBtn id="machine" view={view} go={go} icon="◉" label="Status" />
-
-        <div className="legend-inline">
-          <Info text={
-            <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {(["measured", "derived", "estimated", "simulated", "unavailable"] as const).map((p) => (
-                <span key={p}><b>{PROV_LABEL[p]}</b> — {PROV_HELP[p]}</span>
-              ))}
-            </span>
-          } />
-          <span className="faint">numbers</span>
-        </div>
+        <button className="nav-details" onClick={() => setDetailsOpen((o) => !o)}>
+          <span className="ic">◧</span>Details
+          <span className="faint nav-details-hint">
+            {detailsOpen ? "hide" : "sections"}
+          </span>
+        </button>
       </nav>
+
+      {detailsOpen ? (
+        <aside className="details" data-testid="details-panel">
+          <div className="details-head">details</div>
+
+          <Section label="produce" />
+          <NavBtn id="run" view={view} go={go} icon="✦" label="Run & capture" />
+
+          <Section label="understand" />
+          <NavBtn id="analyze" view={view} go={go} icon="◧" label="Analyze" />
+
+          <Section label="reference" />
+          <NavBtn id="arch" view={view} go={go} icon="⌗" label="Architecture" sub />
+          <NavBtn id="memory" view={view} go={go} icon="▤" label="Memory & KV" sub />
+          <NavBtn id="mm" view={view} go={go} icon="◈" label="Multimodal" sub />
+
+          <Section label="machine" />
+          <NavBtn id="machine" view={view} go={go} icon="◉" label="Status" />
+
+          <div className="legend-inline">
+            <Info text={
+              <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {(["measured", "derived", "estimated", "simulated", "unavailable"] as const).map((p) => (
+                  <span key={p}><b>{PROV_LABEL[p]}</b> — {PROV_HELP[p]}</span>
+                ))}
+              </span>
+            } />
+            <span className="faint">numbers</span>
+          </div>
+        </aside>
+      ) : null}
 
       <main className="main">
         {error && <div className="notice bad mb">backend unreachable: {error}</div>}
-        {view === "index" && <Index onOpen={(v) => go(v)} />}
+        {view === "index" && <Index onOpen={(v) => go(v)} onOpenDetails={openDetails} />}
         {view === "run" && <Chat />}
         {view === "analyze" && <Analyze />}
         {MODEL_TABS.has(view) && (
@@ -115,6 +143,7 @@ export function App() {
         {view === "machine" && <Machine />}
       </main>
     </div>
+    </GpuProvider>
   );
 }
 
