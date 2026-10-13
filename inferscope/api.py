@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from . import asr_arch, chat, profiler, tunnel
+from .enginectl import APP_ROOT
 from .arch import build_graph, list_models, load_config
 from .capability import probe_all
 from .collectors import GpuCollector, SystemCollector
@@ -74,6 +75,14 @@ class AppState:
         # video). One heavy engine at a time on one GPU.
         self.engine_ctl = EngineManager(build_engine_specs(config))
         self.engine_lock = asyncio.Lock()
+        # A redeploy restarts this process but not the engines it started, and
+        # the manager's memory of them went with it. Clear the ones we can
+        # prove are ours before anything tries to claim their ports.
+        try:
+            self.engine_ctl.sweep_orphans(str(APP_ROOT))
+        except Exception:                                       # noqa: BLE001
+            logging.getLogger("inferscope").warning("orphan sweep failed",
+                                                    exc_info=True)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=256)

@@ -145,6 +145,33 @@ def _asr_argv(s: EngineSpec) -> list[str]:
 class EngineManager:
     """Owns at most one resident engine and the process behind it."""
 
+    def sweep_orphans(self, app_root: str) -> list[tuple[str, int]]:
+        """Clear engines left behind by a previous run of the app.
+
+        This manager's idea of what is loaded lives in memory, so a restart
+        forgets it — but the engine process itself survives, because it was
+        started in its own session. Every later "load" then refused its own
+        port with a 409 about a pid it could not account for, and the GPU looked
+        permanently busy to a user who had only redeployed.
+
+        Reaping goes through the same ownership test as the chat server: the
+        listener must name this application's root or the configured model, and
+        must be the engine binary in question. A foreign process on that port is
+        still left alone and still reported.
+        """
+        from .chat import reap_own_orphan
+        cleared: list[tuple[str, int]] = []
+        for spec in self._specs.values():
+            expect = os.path.basename(spec.binary) if spec.binary else ""
+            try:
+                pid = reap_own_orphan(spec.port, app_root, spec.model,
+                                      expect=expect if expect else "server")
+            except Exception:                      # noqa: BLE001
+                continue
+            if pid:
+                cleared.append((spec.key, pid))
+        return cleared
+
     def __init__(self, specs: list[EngineSpec]):
         self._specs = {s.key: s for s in specs}
         self._proc: Optional[subprocess.Popen] = None

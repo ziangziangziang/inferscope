@@ -13,6 +13,71 @@ hardware measurement.
 
 ---
 
+## The workbench
+
+One page. Pick an engine and a model in the left rail, and the diagram, the
+input box and the results all follow that choice. Every model needs an input, so
+the input box is always there — only its *format* changes.
+
+![The workbench with nothing loaded](docs/images/empty.png)
+
+Nothing loaded: the plate is bare and says so, rather than showing an empty frame.
+
+### Speech in — whisper.cpp
+
+![whisper.cpp loaded](docs/images/asr.png)
+
+A file, or the microphone. Audio is captured and resampled to 16 kHz mono WAV in
+the browser, so what reaches the engine is exactly what was captured. Clicking
+the model block opens its architecture, built from the hyperparameter block
+whisper.cpp prints when it loads the file — the shapes are the engine's own
+report and the parameter counts are derived from those, never invented. That is
+the 64.6M figure on the slab.
+
+### Speech out — piper
+
+![piper synthesising](docs/images/tts.png)
+
+Text in, a waveform out, playable in the page, with the engine's own timing.
+Synthesis runs on the CPU on purpose: a voice is tens of megabytes, and the GPU
+should stay free for the model you are inspecting.
+
+### Pictures — SD-Turbo
+
+![SD-Turbo generating](docs/images/image.png)
+
+A prompt in, a 512x512 PNG out in about a second. The fp16 weights are loaded
+explicitly, because the repository also carries float32 copies.
+
+### Reading a language model
+
+![A model's layers](docs/images/architecture.png)
+
+Click the model slab to unfold the architecture. Shapes come from the checkpoint
+config, counts are derived from them, and a layer that repeats is drawn once with
+its count rather than drawn sixty times.
+
+### Engines
+
+| Engine | Model | Input | Status |
+|---|---|---|---|
+| whisper.cpp | ggml-base.en | audio (file or mic) | working |
+| piper | en_US-lessac-medium | text | working |
+| diffusers | SD-Turbo | text | working |
+| llama.cpp | Qwen3.8-27B | text | working |
+| llama.cpp | Qwen3-VL-8B | text + image | working |
+| h3-hip | — | text | **not installed** — no weights on this host |
+
+Video generation is wired the same way as the rest — an engine slot, an input
+box that takes a prompt, and a result panel — but there are no weights for it
+here. Wan2.1-T2V-1.3B was downloaded to check it fits, and it does not: the
+repository ships float32 only, 27 GB, of which 22 GB is the text encoder. With
+24 GB free on this disk that filled it to 100%, so the model was removed and the
+slot reports the reason instead of pretending.
+
+
+---
+
 ## Architecture
 
 ```
