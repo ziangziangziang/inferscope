@@ -16,6 +16,10 @@
 set -uo pipefail
 
 PORT="${INFERSCOPE_PORT:-8090}"
+# A fixed public prefix. Without it every re-issue mints a new random hostname,
+# so any URL handed to a user or bookmarked is dead within hours. With it the
+# address is constant and re-issuing is invisible.
+PREFIX="${INFERSCOPE_TUNNEL_PREFIX:-inferscope}"
 CHECK_EVERY="${WATCHDOG_CHECK_S:-60}"
 BACKOFF_MAX="${WATCHDOG_BACKOFF_MAX_S:-600}"
 LOG=/workspace/inferscope/tunnel-watchdog.log
@@ -78,7 +82,7 @@ reissue() {
   "$RC" stop  >/dev/null 2>&1
   sleep 3
   local out
-  out=$("$RC" expose --port "$PORT" 2>&1)
+  out=$("$RC" expose --port "$PORT" --prefix "$PREFIX" 2>&1)
   local url
   url=$(printf '%s' "$out" | grep -o 'https://[^ ]*' | head -1)
   if [ -n "$url" ]; then

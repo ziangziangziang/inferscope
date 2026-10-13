@@ -114,6 +114,18 @@ always binds loopback (`127.0.0.1:8090`) on the remote host.
 
 ### Tunnel watchdog
 
+The app's public address is a fixed hostname, not one that changes:
+
+```
+https://inferscope.radeon.firstdg.ai
+```
+
+`rc-tunnel expose` accepts `--prefix`, and the watchdog always re-issues with
+it, so re-establishing the tunnel is invisible to anyone holding the link.
+Without a prefix every re-issue mints a new random hostname and any shared URL
+is dead within hours.
+
+
 The tunnel's `frpc` client repeatedly loses its broker credentials
 (`oauth2: "invalid_client"`), which strands the hostname on frp's 404 page even
 though InferScope is still healthy on loopback. This happens roughly every
