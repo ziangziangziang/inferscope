@@ -1,0 +1,37 @@
+#!/bin/sh
+# Put the video weights back where the video engine expects them.
+#
+# Video generation needs ~27 GB, which does not fit the workspace disk
+# alongside everything else. The weights therefore live on the container's root
+# filesystem, which is large but *not* persistent: after a restart they are gone
+# and this script puts them back. It is idempotent — an existing, complete
+# directory is left alone.
+#
+# Run it once after a restart, or before asking for a video engine:
+#     bin/fetch-video-model
+set -e
+
+DEST="${1:-/models/video/wan2.1-t2v-1.3b}"
+REPO="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+
+if [ -f "$DEST/model_index.json" ]; then
+  echo "video model already present at $DEST"
+  exit 0
+fi
+
+# The container's egress is a proxy, and the hub is reached through a mirror.
+: "${https_proxy:=http://notebook-egress-proxy.amd-oneclick-lablab.svc.cluster.local:3128}"
+: "${http_proxy:=$https_proxy}"
+export https_proxy http_proxy
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export HF_HUB_DISABLE_XET=1
+
+mkdir -p "$(dirname "$DEST")"
+/opt/venv/bin/python - "$REPO" "$DEST" <<'PY'
+import sys
+from huggingface_hub import snapshot_download
+repo, dest = sys.argv[1], sys.argv[2]
+print("fetching", repo, "->", dest)
+path = snapshot_download(repo, local_dir=dest, max_workers=4)
+print("ready:", path)
+PY

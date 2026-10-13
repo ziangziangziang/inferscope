@@ -211,12 +211,17 @@ def raw_rate(audio: bytes) -> str:
     return ""
 
 
+#: headers an engine reports about its own output, passed through to the browser
+_ENGINE_META = ("x-engine-seconds", "x-sample-rate", "x-frames", "x-size")
+
+
 def _http_post_raw(url: str, body: bytes, content_type: str, timeout: float):
-    """POST bytes and return (status, raw-bytes, content-type)."""
+    """POST bytes and return (status, raw-bytes, content-type, meta-headers)."""
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Content-Type": content_type})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.status, r.read(), r.headers.get("content-type", "")
+        meta = {k: r.headers[k] for k in _ENGINE_META if k in r.headers}
+        return r.status, r.read(), r.headers.get("content-type", ""), meta
 
 
 def _http_post(url: str, body: bytes, content_type: str, timeout: float):
@@ -614,7 +619,7 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         spec = state.engine_ctl.spec("tts")
         t0 = time.perf_counter()
         try:
-            st, raw, _ = await asyncio.to_thread(_http_post_raw,
+            st, raw, _, meta = await asyncio.to_thread(_http_post_raw,
                                                  spec.base_url + "/synthesize",
                                                  json.dumps({"text": text}).encode(),
                                                  "application/json", 300.0)
@@ -641,7 +646,7 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         steps = int(body.get("steps") or 4)
         t0 = time.perf_counter()
         try:
-            st, raw, _ = await asyncio.to_thread(_http_post_raw,
+            st, raw, _, _meta = await asyncio.to_thread(_http_post_raw,
                                                  spec.base_url + "/generate",
                                                  json.dumps({"prompt": prompt,
                                                              "steps": steps}).encode(),
@@ -653,6 +658,42 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         engine_s = time.perf_counter() - t0
         return JSONResponse({"image": "data:image/png;base64," + base64.b64encode(raw).decode(),
                              "engine_s": engine_s, "steps": steps, "prompt": prompt})
+
+    @app.post("/api/video/generate")
+    async def video_generate(req: Request):
+        """Render a clip from a prompt with the resident video engine.
+
+        Slower than every other endpoint here by an order of magnitude, so the
+        body is only returned once the whole clip exists — a partial video is
+        not a result, and streaming frames would put the browser at the mercy
+        of a GPU that may still be busy minutes later.
+        """
+        if state.engine_ctl.loaded != "video":
+            raise HTTPException(409, "the video engine is not loaded — load it first")
+        body = await req.json()
+        prompt = (body.get("prompt") or "").strip()
+        if not prompt:
+            raise HTTPException(400, "prompt is required")
+        spec = state.engine_ctl.spec("video")
+        t0 = time.perf_counter()
+        payload = {"prompt": prompt}
+        for k in ("frames", "steps", "height", "width"):
+            if body.get(k) is not None:
+                payload[k] = int(body[k])
+        try:
+            st, raw, _, meta = await asyncio.to_thread(_http_post_raw,
+                                                 spec.base_url + "/generate",
+                                                 json.dumps(payload).encode(),
+                                                 "application/json", 1800.0)
+        except Exception as e:                              # noqa: BLE001
+            raise HTTPException(502, f"video engine failed: {e}")
+        if st >= 400:
+            raise HTTPException(502, f"video engine returned {st}: {raw[:200]}")
+        headers = {"X-Engine-Seconds": f"{time.perf_counter() - t0:.4f}"}
+        for k in ("x-frames", "x-size"):
+            if k in meta:
+                headers["X-" + k[2:].title()] = meta[k]
+        return Response(content=raw, media_type="image/gif", headers=headers)
 
     @app.post("/api/asr/transcribe")
     async def asr_transcribe(req: Request):

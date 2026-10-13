@@ -6,14 +6,27 @@
  * result panel. Timings are labelled by where they were measured: the browser's
  * own numbers are ours, the engine's come back over the wire.
  */
-import type { ImageResult, TtsResult } from "../lib/api";
+import type { ImageResult, TtsResult, VideoResult } from "../lib/api";
 
 function secs(v: number) {
   return v >= 1 ? `${v.toFixed(1)}s` : `${Math.round(v * 1000)}ms`;
 }
 
-export function ResultOut({ audio, image, rtfNote }:
-  { audio?: TtsResult | null; image?: ImageResult | null; rtfNote?: string }) {
+export function ResultOut({ audio, image, video, rtfNote }:
+  { audio?: TtsResult | null; image?: ImageResult | null;
+    video?: VideoResult | null; rtfNote?: string }) {
+  if (video) {
+    return (
+      <div className="out" data-testid="video-result">
+        <img src={video.url} alt="generated clip" className="out-clip" />
+        <p className="out-meta">
+          {video.frames} frames{" · "}{video.size}
+          {" · "}{(video.bytes / 1024 / 1024).toFixed(1)} MiB
+          {" · "}{secs(video.engine_s)} in the engine
+        </p>
+      </div>
+    );
+  }
   if (audio) {
     return (
       <div className="out" data-testid="tts-result">

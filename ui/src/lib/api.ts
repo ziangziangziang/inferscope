@@ -168,6 +168,32 @@ export async function imageGenerate(prompt: string, steps = 4): Promise<ImageRes
   return r.json();
 }
 
+export interface VideoResult {
+  url: string;           // object URL for the returned GIF
+  bytes: number;
+  engine_s: number;
+  frames: number;
+  size: string;          // e.g. "480x320"
+}
+
+/** POST /api/video/generate and hand back something playable. */
+export async function videoGenerate(prompt: string,
+                                    opts: { frames?: number; steps?: number } = {}): Promise<VideoResult> {
+  const r = await fetch("/api/video/generate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, ...opts }),
+  });
+  if (!r.ok) throw new Error((await r.text().catch(() => "")).slice(0, 200) || "video failed");
+  const blob = await r.blob();
+  return {
+    url: URL.createObjectURL(blob),
+    bytes: blob.size,
+    engine_s: Number(r.headers.get("X-Engine-Seconds") ?? 0),
+    frames: Number(r.headers.get("X-Frames") ?? 0),
+    size: r.headers.get("X-Size") ?? "",
+  };
+}
+
 export async function asrTranscribe(file: File): Promise<AsrResult> {
   const fd = new FormData();
   fd.append("file", file, file.name);

@@ -3,7 +3,8 @@ import { useApp } from "../state";
 import { useGpu } from "../gpuState";
 import { InputBox, describeAccepts } from "../components/InputBox";
 import { ResultOut } from "../components/ResultOut";
-import { ttsSynthesize, imageGenerate, type TtsResult, type ImageResult } from "../lib/api";
+import { ttsSynthesize, imageGenerate, videoGenerate,
+         type TtsResult, type ImageResult, type VideoResult } from "../lib/api";
 import { api, chatSend, type ChatState, type SampleRow } from "../lib/api";
 import { HostScene, type Node } from "../components/Scene";
 import { SceneDetail } from "../components/SceneDetail";
@@ -34,6 +35,7 @@ export function Index({ onOpen, onOpenDetails }: {
   const [pendingImage, setPendingImage] = useState<string | null>(null);
   const [audio, setAudio] = useState<TtsResult | null>(null);
   const [picture, setPicture] = useState<ImageResult | null>(null);
+  const [clip, setClip] = useState<VideoResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [leaves, setLeaves] = useState<string[]>([]);
   const [text, setText] = useState("");
@@ -108,6 +110,16 @@ export function Index({ onOpen, onOpenDetails }: {
         setPicture(null);
       } catch (e) { setTurnErr(String((e as Error)?.message ?? e)); }
       finally { setBusy(false); setPrompt(""); }
+      return;
+    }
+    if (engine === "video") {
+      setBusy(true);
+      try {
+        const r = await videoGenerate(prompt, { frames: 33, steps: 8 });
+        setClip((prev) => { if (prev) URL.revokeObjectURL(prev.url); return r; });
+        setPicture(null);
+      } catch (e) { setTurnErr(String((e as Error)?.message ?? e)); }
+      finally { setBusy(false); }
       return;
     }
     if (engine === "image") {
@@ -321,7 +333,7 @@ export function Index({ onOpen, onOpenDetails }: {
           audioSlot={<AsrTask loaded={resident === "asr"} embedded />}
         />
 
-        <ResultOut audio={audio} image={picture} />
+        <ResultOut audio={audio} image={picture} video={clip} />
       </div>
 
       {turnErr && <div className="notice bad mb">{turnErr}</div>}

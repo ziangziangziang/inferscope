@@ -162,14 +162,21 @@ class EngineManager:
         from .chat import reap_own_orphan
         cleared: list[tuple[str, int]] = []
         for spec in self._specs.values():
-            expect = os.path.basename(spec.binary) if spec.binary else ""
-            try:
-                pid = reap_own_orphan(spec.port, app_root, spec.model,
-                                      expect=expect if expect else "server")
-            except Exception:                      # noqa: BLE001
-                continue
-            if pid:
-                cleared.append((spec.key, pid))
+            base = os.path.basename(spec.binary) if spec.binary else ""
+            # An engine started through a wrapper is not running under that
+            # name: `bin/piper-server` execs `python -m inferscope.tts_server`,
+            # so matching the binary basename never matches the process that is
+            # actually holding the port. Try the wrapper's name first, then the
+            # generic "server" rule, which the Python engines satisfy.
+            for expect in ([base] if base else []) + ["server"]:
+                try:
+                    pid = reap_own_orphan(spec.port, app_root, spec.model,
+                                          expect=expect)
+                except Exception:                  # noqa: BLE001
+                    continue
+                if pid:
+                    cleared.append((spec.key, pid))
+                    break
         return cleared
 
     def __init__(self, specs: list[EngineSpec]):
