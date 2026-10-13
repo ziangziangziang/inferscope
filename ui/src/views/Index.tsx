@@ -91,6 +91,13 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
   // whose architecture is worth describing in layers.
   const llmUnit = activeUnit?.engine === "llm" ? activeUnit : null;
 
+  // What the input row below is waiting for. Every model needs an input, but
+  // the shape of it belongs to the engine.
+  const inputHint = llmUnit ? "words in, tokens out"
+    : shownEngine === "asr" ? "audio in, text out"
+    : shownEngine ? "not wired up yet"
+    : "pick an engine above";
+
   const pickUnit = async (u: UnitInfo) => {
     setErr(null);
     setChosen(u);
@@ -312,57 +319,72 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         onChanged={refreshEngines}
         onOffloaded={() => { setChosen(null); refreshEngines(); }} />
 
-      {shownEngine === "asr" ? <AsrTask loaded={resident === "asr"} /> : null}
-      {!llmUnit && !shownEngine ? (
-        <div className="task task-idle">
-          <p className="task-sub">
-            No engine is loaded, so nothing can run. Pick one above to load it
-            onto the GPU.
-          </p>
+      {/* Every model needs an input. What that input *is* depends on the
+       * engine — words for a language model, audio for speech recognition, a
+       * prompt for the image and video engines — so the row is always here
+       * rather than appearing only for llama.cpp. It just says what it is
+       * waiting for. */}
+      <div className="pick-wrap">
+        <div className="scene-title">
+          input — every model needs something to run on
+          <span className="scene-key">{inputHint}</span>
         </div>
-      ) : null}
-      {!llmUnit && shownEngine && shownEngine !== "asr" ? (
-        <div className="task task-idle">
-          <p className="task-sub">
-            <b>{shownEngine}</b> is resident. Its panel appears here once it is
-            wired up.
-          </p>
-        </div>
-      ) : null}
 
-      {/* The chat rig belongs to llama.cpp alone. It used to sit on the page
-       * unconditionally, so with whisper.cpp loaded you got a "start engine"
-       * box for an engine that was not the one on the GPU. */}
-      {llmUnit ? (
-        <>
-          <div className="rig">
-            <span className={`rig-led ${running ? "" : "off"}`} />
-            <b>llama.cpp</b>
-            <span style={{ color: "var(--dim)" }}>
-              {running
-                ? `${server?.model ?? "model loaded"} · ${leaves.length} tokens`
-                : "not running — start it to chat"}
-            </span>
-            <div style={{ flex: 1 }} />
-            <button className="btn primary" onClick={toggleEngine} disabled={starting}>
-              {starting ? "loading…" : running ? "stop engine" : "start engine"}
-            </button>
-          </div>
+        {llmUnit ? (
+          <>
+            <div className="rig">
+              <span className={`rig-led ${running ? "" : "off"}`} />
+              <b>llama.cpp</b>
+              <span style={{ color: "var(--dim)" }}>
+                {running
+                  ? `${server?.model ?? "model loaded"} · ${leaves.length} tokens`
+                  : "not running — start it to chat"}
+              </span>
+              <div style={{ flex: 1 }} />
+              <button className="btn primary" onClick={toggleEngine} disabled={starting}>
+                {starting ? "loading…" : running ? "stop engine" : "start engine"}
+              </button>
+            </div>
 
-          <div className="row" style={{ gap: 8, margin: "12px 0 8px" }}>
-            <input
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !busy) grow(); }}
-              placeholder={running ? "Say something and watch the leaves appear…" : "Start the engine to chat"}
-              disabled={!running || busy}
-              style={{ flex: 1, padding: "9px 11px" }} />
-            <button className="btn primary" onClick={grow} disabled={!running || busy}>
-              {busy ? "growing…" : "send"}
-            </button>
+            <div className="row" style={{ gap: 8, margin: "12px 0 8px" }}>
+              <input
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !busy) grow(); }}
+                placeholder={running ? "Say something and watch the leaves appear…" : "Start the engine to chat"}
+                disabled={!running || busy}
+                style={{ flex: 1, padding: "9px 11px" }} />
+              <button className="btn primary" onClick={grow} disabled={!running || busy}>
+                {busy ? "growing…" : "send"}
+              </button>
+            </div>
+          </>
+        ) : shownEngine === "asr" ? (
+          <AsrTask loaded={resident === "asr"} />
+        ) : (
+          <div className="task task-idle">
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                placeholder={shownEngine
+                  ? `${shownEngine} does not take input here yet`
+                  : "Pick an engine above — every model needs something to run on"}
+                disabled
+                style={{ flex: 1, padding: "9px 11px" }} />
+              <button className="btn primary" disabled>run</button>
+            </div>
+            <p className="task-sub">
+              {shownEngine ? (
+                <>
+                  <b>{shownEngine}</b> is resident. Its input appears here once
+                  it is wired up.
+                </>
+              ) : (
+                <>No engine is loaded, so nothing can run.</>
+              )}
+            </p>
           </div>
-        </>
-      ) : null}
+        )}
+      </div>
 
       {err && <div className="notice bad mb">{err}</div>}
       {think && <div className="index-think">
