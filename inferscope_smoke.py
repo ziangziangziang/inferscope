@@ -13,7 +13,7 @@ from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("INFERSCOPE_URL", "http://127.0.0.1:8090")
 SHOTS = Path(os.environ.get("INFERSCOPE_SHOTS", "shots"))
-VIEWS = ["index", "machine", "run", "analyze", "arch", "memory", "mm", "engines", "speech"]
+VIEWS = ["index", "machine", "run", "analyze", "arch", "memory", "mm"]
 
 
 def find_browser():
@@ -49,7 +49,7 @@ def main():
 
         for view in VIEWS:
             try:
-                pg.click(f".nav button:has-text('{ {'index':'Start here','machine':'Status','run':'Run & capture','analyze':'Analyze','arch':'Architecture','memory':'Memory & KV','mm':'Multimodal','engines':'Engines','speech':'Speech'}[view] }')", timeout=8000)
+                pg.click(f".nav button:has-text('{ {'index':'Start here','machine':'Status','run':'Run & capture','analyze':'Analyze','arch':'Architecture','memory':'Memory & KV','mm':'Multimodal'}[view] }')", timeout=8000)
             except Exception as e:
                 fails.append(f"{view}: nav click failed {str(e)[:60]}"); continue
             READY = {
@@ -60,8 +60,6 @@ def main():
                 "run": ".chat-log",
                 "machine": ".card",
                 "index": ".tree-svg",
-                "engines": ".eng-grid .eng-card",
-                "speech": ".sp-row",
             }
             try:
                 pg.wait_for_selector(READY[view], timeout=15000)
@@ -161,64 +159,74 @@ def main():
                         fails.append(f"scene: sub-layers missing {want}")
                 pg.screenshot(path=str(SHOTS / "scene-unit.png"))
 
-        # --- engine load / offload + ASR ---------------------------------
-        pg.click(".nav button:has-text('Engines')")
-        pg.wait_for_selector(".eng-grid .eng-card", timeout=15000)
-        cards = pg.evaluate("() => document.querySelectorAll('.eng-card').length")
-        print("engine cards:", cards)
-        if cards < 4:
-            fails.append(f"engines: only {cards} engine cards rendered")
-        if not pg.query_selector('.eng-card[data-engine="asr"]'):
-            fails.append("engines: asr card missing")
+        # --- engines + ASR, both on the first page ---
+        pg.click(".nav button:has-text('Start here')")
+        try:
+            pg.wait_for_selector('[data-testid="engine-rail"]', timeout=15000)
+        except Exception:
+            fails.append("index: no engine rail on the first page")
+        chips = pg.evaluate("() => document.querySelectorAll('.rail-chip').length")
+        print("engine chips:", chips)
+        if chips < 4:
+            fails.append(f"index: only {chips} engine chips on the first page")
+        if not pg.query_selector('.rail-chip[data-engine="asr"]'):
+            fails.append("index: asr chip missing from the rail")
 
-        # speech refuses to transcribe unless the engine is loaded
-        pg.click(".nav button:has-text('Speech')")
-        pg.wait_for_selector(".sp-row", timeout=15000)
-        if not pg.query_selector(".notice.warn"):
-            print("speech: engine already resident")
+        # microphone must degrade with a sentence, not a crash
+        mic = pg.query_selector('.chip:has-text("microphone")')
+        if mic:
+            mic.click()
+            pg.wait_for_timeout(400)
+            rec = pg.query_selector('button:has-text("record")')
+            if rec:
+                rec.click()
+                pg.wait_for_timeout(1500)
+                hint = pg.inner_text(".sp-hint") if pg.query_selector(".sp-hint") else ""
+                print("mic fallback:", hint[:40])
+                if not hint.strip():
+                    fails.append("index: record with no mic produced no explanation")
+                else:
+                    pg.screenshot(path=str(SHOTS / "index-mic.png"))
+            pg.click('.chip:has-text("file")')
 
-        # load it from the console, then transcribe the bundled sample
-        pg.click(".nav button:has-text('Engines')")
-        pg.wait_for_timeout(400)
-        load = pg.query_selector('.eng-card[data-engine="asr"] button.primary')
+        # load asr from page 1, then transcribe the bundled sample
+        load = pg.query_selector('.rail-chip[data-engine="asr"] button.primary')
         if load:
             load.click()
             try:
-                pg.wait_for_selector('.eng-card[data-engine="asr"].on', timeout=180000)
+                pg.wait_for_selector('.rail-chip[data-engine="asr"].on', timeout=180000)
             except Exception:
-                fails.append("engines: asr never became resident")
-            pg.screenshot(path=str(SHOTS / "engines-resident.png"))
+                fails.append("index: asr never became resident from page 1")
+            try:
+                pg.wait_for_selector('[data-testid="asr-task"]', timeout=15000)
+            except Exception:
+                fails.append("index: asr task panel did not appear")
+            pg.screenshot(path=str(SHOTS / "index-asr-loaded.png"))
 
-        pg.click(".nav button:has-text('Speech')")
-        pg.wait_for_selector(".sp-row", timeout=15000)
         sample = Path("/workspace/build/whisper.cpp/samples/jfk.wav")
         if sample.exists():
             pg.set_input_files("input[type=file]", str(sample))
             pg.wait_for_timeout(400)
-            pg.click("button:has-text('transcribe')")
+            pg.click('button:has-text("transcribe")')
             try:
                 pg.wait_for_selector('[data-testid="asr-result"]', timeout=180000)
             except Exception:
-                fails.append("speech: no transcript rendered")
+                fails.append("index: no transcript rendered from page 1")
             else:
                 txt = pg.inner_text('[data-testid="asr-result"]')
                 if "country" not in txt.lower():
-                    fails.append(f"speech: transcript looks wrong ({txt[:70]!r})")
-                print("asr transcript ok")
-                pg.screenshot(path=str(SHOTS / "speech-result.png"))
+                    fails.append(f"index: transcript looks wrong ({txt[:70]!r})")
+                print("asr transcript ok (page 1)")
+                pg.screenshot(path=str(SHOTS / "index-asr-result.png"))
         else:
-            print("speech: no sample audio on this host, skipping transcription")
+            print("no sample audio on this host, skipping transcription")
 
-        # offload again
-        pg.click(".nav button:has-text('Engines')")
-        pg.wait_for_timeout(400)
-        off = pg.query_selector('.eng-card[data-engine="asr"] button:has-text("offload")')
+        off = pg.query_selector('.rail-chip[data-engine="asr"] button:has-text("offload")')
         if off:
             off.click()
             pg.wait_for_timeout(6000)
-            if pg.query_selector('.eng-card[data-engine="asr"].on'):
-                fails.append("engines: offload did not release the engine")
-            pg.screenshot(path=str(SHOTS / "engines-offloaded.png"))
+            if pg.query_selector('.rail-chip[data-engine="asr"].on'):
+                fails.append("index: offload from page 1 did not release the engine")
 
         # Memory KV calc produces a number
         pg.click(".nav button:has-text('Memory')")

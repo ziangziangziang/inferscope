@@ -5,6 +5,8 @@ import { HostScene, type Node } from "../components/Scene";
 import { SceneDetail } from "../components/SceneDetail";
 import { toArch, type Sel } from "../components/archTypes";
 import { Info } from "../components/Info";
+import { EngineRail, useEngineStatus } from "../components/EngineRail";
+import { AsrTask } from "../components/tasks/AsrTask";
 
 /**
  * The front door.
@@ -33,6 +35,10 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
   /* --- model architecture, for the scene --------------------------- */
   const [sel, setSel] = useState<Sel>(null);
   const [arch, setArch] = useState<ReturnType<typeof toArch>>(null);
+
+  // Engine load/offload lives on this page: one place to drive the machine.
+  const { status: engStatus, refresh: refreshEngines } = useEngineStatus();
+  const resident = engStatus?.loaded ?? null;
 
   // Whether the detail panel is showing the model itself. The scene stays the
   // overview either way; the architecture lives in the panel.
@@ -203,6 +209,26 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
           </div>
         </div>
       </div>
+
+      <EngineRail status={engStatus} onChanged={refreshEngines} />
+
+      {resident === "asr" ? <AsrTask loaded={!!resident} /> : null}
+      {resident === null ? (
+        <div className="task task-idle">
+          <p className="task-sub">
+            No engine is loaded, so nothing can run. Pick one above to load it
+            onto the GPU, or use the chat below with the language engine.
+          </p>
+        </div>
+      ) : null}
+      {resident !== null && resident !== "asr" ? (
+        <div className="task task-idle">
+          <p className="task-sub">
+            <b>{resident}</b> is resident. Its panel appears here once it is
+            wired up; until then the chat below still runs the language engine.
+          </p>
+        </div>
+      ) : null}
 
       <div className="rig">
         <span className={`rig-led ${running ? "" : "off"}`} />

@@ -375,10 +375,32 @@ Two things worth recording:
   an extra WORD and no word-alignment padding. Three bugs in a row, all of them
   invisible until a real file went through.
 
-The view refuses to transcribe unless the engine is already loaded, and points
-at the Engines screen. Loading an engine evicts whatever else is on the GPU;
-that is the user's decision to make, not something to trigger from a button
-that looks unrelated.
+### Everything on the first page
+
+The engine console and the speech panel were separate views. They are now part
+of the front door: the rail sits under the scene, and the task panel below it
+shows whatever engine is resident. One page drives the machine — scene, load and
+offload, run the task, read the result — instead of hunting across tabs for a
+button whose effect is global.
+
+The rail is a rail rather than a list because the resident engine is the thing
+that matters; the rest are one click away, and the eviction notice appears
+exactly where the load happened.
+
+### Voice input
+
+`useRecorder` captures raw PCM with a `ScriptProcessor` (deprecated, but the
+only node that returns samples synchronously everywhere we need, and it keeps a
+codec out of the path), resamples to 16 kHz mono through an
+`OfflineAudioContext`, and writes the WAV header by hand. The browser already
+knows how to do the decode-and-resample, so the host gains no ffmpeg dependency
+for a container format the GPU path does not want.
+
+Each way a microphone can fail gets its own sentence. The generic branch used to
+surface the browser's raw message, which on this box was literally
+`Not supported` — technically true and useless. It now distinguishes refused
+permission, no device, device busy, and unsupported browser, and names the error
+code only when it is genuinely unrecognised.
 
 ## Information architecture (restructured)
 

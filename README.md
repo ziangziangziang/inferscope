@@ -162,8 +162,12 @@ Design notes:
 
 ## The scene, and opening the model
 
-The front page carries one isometric diagram, all of it through a single
-projection (`ui/src/components/iso.tsx`), so nothing can drift out of
+The front page is the whole machine: one isometric diagram, the engine rail that
+loads and offloads whatever should be on the GPU, and the panel for whichever
+engine is resident — currently chat for the language engine and speech-to-text
+for the speech engine, with image and video to follow.
+
+The diagram itself is built from a single projection (`ui/src/components/iso.tsx`), so nothing can drift out of
 perspective:
 
 ```
