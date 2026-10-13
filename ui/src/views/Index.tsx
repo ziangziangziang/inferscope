@@ -8,7 +8,7 @@ import { Info } from "../components/Info";
 import { ResidentStrip, useEngineStatus } from "../components/EngineRail";
 import { AsrTask } from "../components/tasks/AsrTask";
 import { UnitPicker, useSwapEngine } from "../components/UnitPicker";
-import { units as fetchUnits, type UnitInfo } from "../lib/api";
+import { units as fetchUnits, engineOffload, type UnitInfo } from "../lib/api";
 
 /**
  * The front door.
@@ -87,11 +87,29 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
 
   const shownEngine = effectiveResident ?? chosen?.engine ?? null;
 
+  // The language engine is the only one with a chat surface, and the only one
+  // whose architecture is worth describing in layers.
+  const llmUnit = activeUnit?.engine === "llm" ? activeUnit : null;
+
   const pickUnit = async (u: UnitInfo) => {
     setErr(null);
     setChosen(u);
     try {
-      await swapTo(u);
+      if (u.managed) {
+        await swapTo(u);
+      } else {
+        // The language engine lives outside enginectl, so free the card and
+        // start it through its own endpoint — otherwise picking the model the
+        // whole page is about would fail with "unknown engine: llm".
+        await engineOffload();
+        setStarting(true);
+        try {
+          await api.chatStartServer(false);
+        } finally {
+          setStarting(false);
+        }
+        api.chatState().then(setChat).catch(() => {});
+      }
     } catch (e) {
       setErr(String((e as Error)?.message ?? e));
       setChosen(null);
@@ -135,8 +153,15 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
   const running = !!chat?.ready;
   const server = chat?.server;
 
+  // `api.models()` lists the GGUF files that exist *on disk*, which is not the
+  // same as the model in play: with whisper.cpp loaded it still happily returned
+  // the Qwen gguf, and the detail panel went on describing Qwen's layers. Only
+  // ask for an architecture when a language model is actually the chosen unit,
+  // and drop it the moment it is not.
+  const llmKey = llmUnit?.key ?? (activeUnit == null && running ? "llm:running" : null);
   useEffect(() => {
     let cancelled = false;
+    if (!llmKey) { setArch(null); return; }
     api.models()
       .then((m) => {
         if (cancelled || !m.models?.length) return null;
@@ -153,7 +178,7 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
     return () => { cancelled = true; };
     // `server` is derived from `chat`; depending on the model string is enough.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [server?.model, running]);
+  }, [llmKey, server?.model, running]);
 
   const pct = (v?: number | null, d = 0) => (v == null ? 0 : Math.round(v));
 
@@ -255,8 +280,18 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
           <div className="scene-side">
             {sel ? (
               <SceneDetail sel={sel} arch={arch}
-                modelName={running ? (server?.model ?? arch?.model_id ?? "") : (arch?.model_id ?? "")}
+                modelName={llmUnit
+                  ? (running ? (server?.model ?? arch?.model_id ?? "") : (arch?.model_id ?? ""))
+                  // not a language model: name the unit that is actually up,
+                  // or the panel titles whisper's weights with Qwen's filename
+                  : (activeUnit?.model_label ?? "")}
+                engineLabel={activeUnit?.engine_label}
+                engineIsLlm={!!llmUnit}
                 running={running} tokens={leaves.length}
+                port={(() => {
+                  const e = (engStatus?.engines ?? []).find((x) => x.key === activeUnit?.engine);
+                  return e?.port ? `127.0.0.1:${e.port}` : undefined;
+                })()}
                 onSelect={pick} onClose={() => setSel(null)} />
             ) : null}
           </div>
@@ -274,52 +309,60 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
 
       <ResidentStrip status={engStatus} unit={activeUnit}
         llmRunning={!!chat?.ready || !!chat?.server?.running}
-        onChanged={refreshEngines} />
+        onChanged={refreshEngines}
+        onOffloaded={() => { setChosen(null); refreshEngines(); }} />
 
-      {resident === "asr" ? <AsrTask loaded={!!resident} /> : null}
-      {resident === null ? (
+      {shownEngine === "asr" ? <AsrTask loaded={resident === "asr"} /> : null}
+      {!llmUnit && !shownEngine ? (
         <div className="task task-idle">
           <p className="task-sub">
             No engine is loaded, so nothing can run. Pick one above to load it
-            onto the GPU, or use the chat below with the language engine.
+            onto the GPU.
           </p>
         </div>
       ) : null}
-      {resident !== null && resident !== "asr" ? (
+      {!llmUnit && shownEngine && shownEngine !== "asr" ? (
         <div className="task task-idle">
           <p className="task-sub">
-            <b>{resident}</b> is resident. Its panel appears here once it is
-            wired up; until then the chat below still runs the language engine.
+            <b>{shownEngine}</b> is resident. Its panel appears here once it is
+            wired up.
           </p>
         </div>
       ) : null}
 
-      <div className="rig">
-        <span className={`rig-led ${running ? "" : "off"}`} />
-        <b>llama.cpp</b>
-        <span style={{ color: "var(--dim)" }}>
-          {running
-            ? `${server?.model ?? "model loaded"} · ${leaves.length} tokens`
-            : "not running — start it to chat"}
-        </span>
-        <div style={{ flex: 1 }} />
-        <button className="btn primary" onClick={toggleEngine} disabled={starting}>
-          {starting ? "loading…" : running ? "stop engine" : "start engine"}
-        </button>
-      </div>
+      {/* The chat rig belongs to llama.cpp alone. It used to sit on the page
+       * unconditionally, so with whisper.cpp loaded you got a "start engine"
+       * box for an engine that was not the one on the GPU. */}
+      {llmUnit ? (
+        <>
+          <div className="rig">
+            <span className={`rig-led ${running ? "" : "off"}`} />
+            <b>llama.cpp</b>
+            <span style={{ color: "var(--dim)" }}>
+              {running
+                ? `${server?.model ?? "model loaded"} · ${leaves.length} tokens`
+                : "not running — start it to chat"}
+            </span>
+            <div style={{ flex: 1 }} />
+            <button className="btn primary" onClick={toggleEngine} disabled={starting}>
+              {starting ? "loading…" : running ? "stop engine" : "start engine"}
+            </button>
+          </div>
 
-      <div className="row" style={{ gap: 8, margin: "12px 0 8px" }}>
-        <input
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !busy) grow(); }}
-          placeholder={running ? "Say something and watch the leaves appear…" : "Start the engine to chat"}
-          disabled={!running || busy}
-          style={{ flex: 1, padding: "9px 11px" }} />
-        <button className="btn primary" onClick={grow} disabled={!running || busy}>
-          {busy ? "growing…" : "send"}
-        </button>
-      </div>
+          <div className="row" style={{ gap: 8, margin: "12px 0 8px" }}>
+            <input
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !busy) grow(); }}
+              placeholder={running ? "Say something and watch the leaves appear…" : "Start the engine to chat"}
+              disabled={!running || busy}
+              style={{ flex: 1, padding: "9px 11px" }} />
+            <button className="btn primary" onClick={grow} disabled={!running || busy}>
+              {busy ? "growing…" : "send"}
+            </button>
+          </div>
+        </>
+      ) : null}
 
       {err && <div className="notice bad mb">{err}</div>}
       {think && <div className="index-think">

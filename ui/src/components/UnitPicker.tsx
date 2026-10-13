@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   units, engineLoad, engineOffload,
-  type UnitCatalogue, type UnitInfo,
+  type UnitCatalogue, type UnitInfo, type LoadResult,
 } from "../lib/api";
 import { fmtBytes, fmtParams, EVICT_MS, LOAD_MS } from "./unitModel";
 
@@ -32,7 +32,11 @@ export function useSwapEngine() {
         setSwap({ phase: "idle", key: u.engine });
       }, EVICT_MS + LOAD_MS));
     }
-    const r = await engineLoad(u.engine);
+    // The language engine is not in the engine registry — chat.py owns that
+    // process — so asking enginectl to load it just returns "unknown engine".
+    const r: LoadResult = u.managed
+      ? await engineLoad(u.engine)
+      : { ok: true, error: null, evicted: null };
     if (!r.ok) {
       setSwap({ phase: "idle", key: null });
       throw new Error(r.error || "could not load");

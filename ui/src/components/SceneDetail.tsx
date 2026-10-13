@@ -16,6 +16,13 @@ export interface DetailProps {
   modelName: string;
   running: boolean;
   tokens: number;
+  /** The engine's own port. Was hardcoded to llama.cpp's 8081, which is wrong
+   *  for every other engine — whisper.cpp answers on 8082. */
+  port?: string;
+  /** e.g. "whisper.cpp". Was hardcoded to "llama.cpp". */
+  engineLabel?: string;
+  /** Only the language engine produces tokens; whisper.cpp returns text. */
+  engineIsLlm?: boolean;
   onSelect: (s: NonNullable<Sel>) => void;
   onClose: () => void;
 }
@@ -61,13 +68,14 @@ export function SceneDetail(props: DetailProps) {
   let role = "";
 
   if (sel?.kind === "engine") {
-    title = "llama.cpp";
+    title = props.engineLabel ?? "the engine";
     role = "the inference engine";
     body = (
       <>
         <p className="side-note">
           The engine is the program that actually runs the model. It reads the
-          weights, does the arithmetic, and hands back the next token. It is not
+          weights, does the arithmetic, and hands back{" "}
+          {props.engineIsLlm ? "the next token" : "its answer"}. It is not
           the model — swap the engine and the same weights still describe the
           same model.
         </p>
@@ -75,7 +83,7 @@ export function SceneDetail(props: DetailProps) {
           <KV k="state" v={running ? "running" : "idle"} />
           <KV k="tokens" v={String(tokens)} />
           <KV k="loaded" v={modelName || "—"} />
-          <KV k="port" v="127.0.0.1:8081" />
+          <KV k="port" v={props.port ?? "—"} />
         </dl>
         <p className="side-hint">
           The engine box is drawn dashed because it is software: it has no size of
@@ -88,12 +96,20 @@ export function SceneDetail(props: DetailProps) {
     role = "the model weights";
     body = (
       <>
-        <p className="side-note">
-          The model is just numbers — a few tens of billions of them, read in
-          order once per layer to predict the next token. Every box below is one
-          group of those numbers, drawn at the size of the group it really holds.
-          Click any box to open it.
-        </p>
+        {arch ? (
+          <p className="side-note">
+            The model is just numbers — a few tens of billions of them, read in
+            order once per layer to predict the next token. Every box below is one
+            group of those numbers, drawn at the size of the group it really holds.
+            Click any box to open it.
+          </p>
+        ) : (
+          <p className="side-note">
+            The model is just numbers — the weights this engine reads. We only
+            have a layer map for the language model, so there are no boxes to
+            break this one down into; its size on the plate is the honest summary.
+          </p>
+        )}
         <dl className="side-kv">
           <KV k="family" v={String(meta.family ?? arch?.family ?? "—")} />
           <KV k="parameters" v={total ? total.toLocaleString() : "—"} />

@@ -100,11 +100,19 @@ def main():
 
         # --- the scene: engine -> model -> architecture -> sub-layers ---
         pg.click(".nav button:has-text('Start here')")
-        # the scene draws from the resident unit, so make sure one is resident
+        # the scene draws from the chosen unit, so make sure one is chosen
         if not pg.query_selector("svg.scene-svg .tier-model"):
-            st = pg.query_selector('button:has-text("start engine")')
-            if st:
-                st.click()
+            # pick the language model the way a reader would: off the picker.
+            # (the old fallback pressed a "start engine" button that now only
+            #  exists once the language model is the chosen unit.)
+            # The catalogue polls in, so give it a moment to arrive.
+            try:
+                pg.wait_for_selector('[data-unit^="llm/"]', timeout=20000)
+            except Exception:
+                pass
+            chip = pg.query_selector('[data-unit^="llm/"]')
+            if chip:
+                chip.click()
                 try:
                     pg.wait_for_selector("svg.scene-svg .tier-model", timeout=180000)
                 except Exception:
@@ -185,12 +193,22 @@ def main():
         # chat.py's language server — and the scene reads both, so both have to
         # be cleared or there is no empty->load transition to assert on.
         pg.evaluate("() => fetch('/api/engines/offload', {method:'POST'})")
-        stop = pg.query_selector('button:has-text("stop engine")')
-        if stop:
-            stop.click()
-        pg.wait_for_timeout(9000)
-
-        # the plate starts bare and says so, so it is not mistaken for a bug
+        # ask chat.py directly rather than pressing "stop engine": that button
+        # only exists while the language model is the chosen unit, which is
+        # exactly the state this step is trying to clear.
+        pg.evaluate("() => fetch('/api/chat/server/stop', {method:'POST'})")
+        # Reload rather than sleep: the page holds the chosen unit in state, so
+        # a reload is what actually returns it to "nothing picked".
+        pg.wait_for_timeout(1500)
+        pg.reload(wait_until="domcontentloaded")
+        # Both shutdowns are asynchronous — llama.cpp takes tens of seconds to
+        # come up and a moment to go away — so wait for the plate to actually
+        # go bare rather than guessing with a fixed sleep.
+        try:
+            pg.wait_for_function("() => !document.querySelector('.stack [data-block]')",
+                                 timeout=45000)
+        except Exception:
+            pass
         pg.wait_for_timeout(1200)
         if pg.query_selector(".stack [data-block]"):
             fails.append("index: scene drew blocks with nothing loaded")

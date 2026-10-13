@@ -43,9 +43,9 @@ function uptime(s: number): string {
  * Keeping a second set of load buttons here meant two controls for one action,
  * so this is status and release only.
  */
-export function ResidentStrip({ status, unit, llmRunning, onChanged }:
+export function ResidentStrip({ status, unit, llmRunning, onChanged, onOffloaded }:
   { status: EngineStatus | null; unit: Unit | null; llmRunning: boolean;
-    onChanged: () => void }) {
+    onChanged: () => void; onOffloaded?: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -68,6 +68,10 @@ export function ResidentStrip({ status, unit, llmRunning, onChanged }:
     try {
       const r = await engineOffload();
       setNote(r.stopped ? `${r.engine} offloaded — the GPU is free.` : (r.detail || "nothing was loaded"));
+      // Nothing is on the GPU any more, so the page must stop claiming a unit
+      // is chosen — otherwise the scene keeps drawing a stack for an engine
+      // that has been switched off.
+      onOffloaded?.();
     } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     finally { setBusy(null); onChanged(); }
   };
