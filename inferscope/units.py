@@ -143,7 +143,10 @@ def discover(cfg, specs) -> list[Unit]:
         # configured model may be the directory that holds them, and listing
         # both puts "tts" and "en_US-lessac-medium.onnx" in the picker as two
         # rival models when they are one thing.
-        file_only = all(pat.startswith("*.") for pat in PATTERNS.get(spec.key, ()))
+        pats = PATTERNS.get(spec.key, ())
+        # an engine with no patterns takes directories (image, video), so an
+        # empty tuple must not read as "wants files"
+        file_only = bool(pats) and all(pat.startswith("*.") for pat in pats)
         if file_only:
             candidates = [c for c in candidates
                           if os.path.isfile(c) or not os.path.isdir(c)]

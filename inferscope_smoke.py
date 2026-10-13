@@ -117,6 +117,11 @@ def main():
         pg.click(".topbar button.brand")
         # the scene draws from the chosen unit, so make sure one is chosen
         if not pg.query_selector("svg.scene-svg .tier-model"):
+            # Start from a known state: something else may still be resident
+            # from an earlier section, and swapping has to evict it first.
+            pg.evaluate("() => fetch('/api/engines/offload', {method:'POST'})")
+            pg.wait_for_timeout(2500)
+
             # pick the language model the way a reader would: off the picker.
             # (the old fallback pressed a "start engine" button that now only
             #  exists once the language model is the chosen unit.)
@@ -161,7 +166,7 @@ def main():
             if not pg.query_selector(".scene-wrap.side-open"):
                 pg.click("svg.scene-svg .tier-model")
             try:
-                pg.wait_for_selector(".arch-svg .arch-boxes > g", timeout=25000)
+                pg.wait_for_selector(".arch-svg .arch-boxes > g", timeout=45000)
             except Exception:
                 pass
             boxes = pg.evaluate(

@@ -1,0 +1,9 @@
+#!/bin/sh
+# A diffusers pipeline as an engine process.
+#
+# Same contract as piper-server: enginectl runs "<binary> --model <path>
+# --port <n>", and this fixes the module and import path behind that.
+set -e
+cd /workspace/inferscope
+export PYTHONPATH=/workspace/inferscope
+exec /opt/venv/bin/python -m inferscope.image_server "$@"
