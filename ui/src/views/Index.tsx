@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../state";
 import { useGpu } from "../gpuState";
+import { InputBox, describeAccepts } from "../components/InputBox";
 import { api, chatSend, type ChatState, type SampleRow } from "../lib/api";
 import { HostScene, type Node } from "../components/Scene";
 import { SceneDetail } from "../components/SceneDetail";
@@ -28,6 +29,7 @@ export function Index({ onOpen, onOpenDetails }: {
   const { health } = useApp();
   const [live, setLive] = useState<SampleRow | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [pendingImage, setPendingImage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [leaves, setLeaves] = useState<string[]>([]);
   const [text, setText] = useState("");
@@ -37,7 +39,7 @@ export function Index({ onOpen, onOpenDetails }: {
 
   /* --- model architecture, for the scene --------------------------- */
   const [sel, setSel] = useState<Sel>(null);
-  const [arch, setArch] = useState<ReturnType<typeof toArch>>(null);
+  const [fetchedArch, setArch] = useState<ReturnType<typeof toArch>>(null);
 
   // Engine, model and residency are owned by the frame now (the left rail's
   // configurable panel sets them), so the scene just reads the same state.
@@ -50,16 +52,38 @@ export function Index({ onOpen, onOpenDetails }: {
   // The scene draws the chosen unit, or whatever is resident if nothing is
   // chosen. Parameter counts for the language model come from the loaded
   // architecture, which only this view fetches.
+  // whisper.cpp ships no config, so the catalogue builds its graph from the
+  // engine's own load report and hands it over inline. Prefer that over
+  // anything fetched, and let it supply the parameter total the block is sized
+  // by — otherwise a 141 MiB whisper would be drawn as an unknown slab.
+  const unitArch = (g.activeUnit?.arch ?? null) as ReturnType<typeof toArch>;
+  const arch = unitArch ?? fetchedArch;
+
   const activeUnit = useMemo(() => {
     const u = g.activeUnit;
     if (!u) return null;
-    return u.engine === "llm"
-      ? { ...u, params: (arch?.nodes ?? []).reduce((a, n) => a + (n.params ?? 0), 0) }
-      : u;
-  }, [g.activeUnit, arch]);
+    const total = u.engine === "llm"
+      ? (fetchedArch?.nodes ?? []).reduce((a, n) => a + (n.params ?? 0), 0)
+      : u.params;
+    const fromArch = unitArch?.params_total;
+    return { ...u, params: total || fromArch || u.params };
+  }, [g.activeUnit, fetchedArch, unitArch]);
 
   const llmUnit = activeUnit?.engine === "llm" ? activeUnit : null;
-  const inputHint = g.inputHint;
+
+  // What this box takes, from the unit's own catalogue entry. A unit with no
+  // engine wired up still declares it, so the box can say so rather than vanish.
+  const accepts = (activeUnit?.accepts ?? []) as string[];
+  const inputHint = describeAccepts(accepts.length ? accepts : ["text"]);
+  const notWired = !!activeUnit && !activeUnit.configured;
+  const inputReason = !activeUnit
+    ? "No engine is loaded, so nothing can run. Pick one in the rail."
+    : notWired
+      ? (activeUnit.problem || "this engine is not wired up yet")
+      : llmUnit && !running
+        ? "start the engine above to use it"
+        : null;
+  const inputDisabled = !activeUnit || notWired || (!!llmUnit && !running);
 
 
   // Whether the detail panel is showing the model itself. The scene stays the
@@ -95,7 +119,9 @@ export function Index({ onOpen, onOpenDetails }: {
   // the Qwen gguf, and the detail panel went on describing Qwen's layers. Only
   // ask for an architecture when a language model is actually the chosen unit,
   // and drop it the moment it is not.
-  const llmKey = llmUnit?.key ?? (activeUnit == null && running ? "llm:running" : null);
+  // Nothing to fetch when the unit brought its own architecture.
+  const llmKey = unitArch ? null
+    : llmUnit?.key ?? (activeUnit == null && running ? "llm:running" : null);
   useEffect(() => {
     let cancelled = false;
     if (!llmKey) { setArch(null); return; }
@@ -143,7 +169,7 @@ export function Index({ onOpen, onOpenDetails }: {
     const ac = new AbortController();
     abort.current = ac;
     await chatSend(
-      { message: q, history: [], profile: false },
+      { message: q, history: [], profile: false, images: pendingImage ? [pendingImage] : [] },
       (kind, data) => {
         const d = data as Record<string, unknown>;
         if (kind === "delta") {
@@ -168,7 +194,7 @@ export function Index({ onOpen, onOpenDetails }: {
           ? `connection dropped after ${partial} tokens — showing what arrived`
           : `chat failed: ${(e as Error)?.message ?? e}`);
       }
-    }).finally(() => { abort.current = null; setBusy(false); });
+    }).finally(() => { abort.current = null; setBusy(false); setPendingImage(null); });
   }
 
   return (
@@ -233,59 +259,34 @@ export function Index({ onOpen, onOpenDetails }: {
         </div>
 
         {llmUnit ? (
-          <>
-            <div className="rig">
-              <span className={`rig-led ${running ? "" : "off"}`} />
-              <b>llama.cpp</b>
-              <span style={{ color: "var(--dim)" }}>
-                {running
-                  ? `${server?.model ?? "model loaded"} · ${leaves.length} tokens`
-                  : "not running — start it to chat"}
-              </span>
-              <div style={{ flex: 1 }} />
-              <button className="btn primary" onClick={toggleEngine} disabled={starting}>
-                {starting ? "loading…" : running ? "stop engine" : "start engine"}
-              </button>
-            </div>
-
-            <div className="row" style={{ gap: 8, margin: "12px 0 8px" }}>
-              <input
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !busy) grow(); }}
-                placeholder={running ? "Say something and watch the leaves appear…" : "Start the engine to chat"}
-                disabled={!running || busy}
-                style={{ flex: 1, padding: "9px 11px" }} />
-              <button className="btn primary" onClick={grow} disabled={!running || busy}>
-                {busy ? "growing…" : "send"}
-              </button>
-            </div>
-          </>
-        ) : shownEngine === "asr" ? (
-          <AsrTask loaded={resident === "asr"} />
-        ) : (
-          <div className="task task-idle">
-            <div className="row" style={{ gap: 8 }}>
-              <input
-                placeholder={shownEngine
-                  ? `${shownEngine} does not take input here yet`
-                  : "Pick an engine above — every model needs something to run on"}
-                disabled
-                style={{ flex: 1, padding: "9px 11px" }} />
-              <button className="btn primary" disabled>run</button>
-            </div>
-            <p className="task-sub">
-              {shownEngine ? (
-                <>
-                  <b>{shownEngine}</b> is resident. Its input appears here once
-                  it is wired up.
-                </>
-              ) : (
-                <>No engine is loaded, so nothing can run.</>
-              )}
-            </p>
+          <div className="rig">
+            <span className={`rig-led ${running ? "" : "off"}`} />
+            <b>llama.cpp</b>
+            <span style={{ color: "var(--dim)" }}>
+              {running
+                ? `${server?.model ?? "model loaded"} · ${leaves.length} tokens`
+                : "not running — start it to chat"}
+            </span>
+            <div style={{ flex: 1 }} />
+            <button className="btn primary" onClick={toggleEngine} disabled={starting}>
+              {starting ? "loading…" : running ? "stop engine" : "start engine"}
+            </button>
           </div>
-        )}
+        ) : null}
+
+        <InputBox
+          accepts={accepts}
+          engine={activeUnit?.engine ?? ""}
+          disabled={inputDisabled}
+          reason={inputReason}
+          value={prompt}
+          onChange={setPrompt}
+          onSubmit={() => { if (!accepts.includes("audio")) void grow(); }}
+          busy={busy}
+          image={pendingImage}
+          onImage={setPendingImage}
+          audioSlot={<AsrTask loaded={resident === "asr"} embedded />}
+        />
       </div>
 
       {turnErr && <div className="notice bad mb">{turnErr}</div>}

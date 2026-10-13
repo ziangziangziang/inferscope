@@ -359,6 +359,7 @@ class ManagedServer:
 
     def __init__(self, binary: str, model_path: str, port: int, *,
                  ctx: int = 8192, parallel: int = 1,
+                 mmproj: Optional[str] = None,
                  extra_args: list[str] | None = None,
                  profile: bool = False, out_dir: str = "", max_seconds: int = 900):
         self.binary = binary
@@ -366,6 +367,7 @@ class ManagedServer:
         self.port = port
         self.ctx = ctx
         self.parallel = parallel
+        self.mmproj = mmproj
         self.extra_args = extra_args or []
         self.profile = profile
         self.out_dir = out_dir
@@ -385,10 +387,15 @@ class ManagedServer:
         return self.proc is not None and self.proc.poll() is None
 
     def server_argv(self) -> list[str]:
-        return [self.binary, "-m", self.model_path, "--port", str(self.port),
+        # llama.cpp only accepts pictures when it is given the projector that
+        # belongs to the weights, so this flag is the whole difference between a
+        # language model and a vision-language one.
+        argv = [self.binary, "-m", self.model_path, "--port", str(self.port),
                 "--host", "127.0.0.1", "--metrics",
-                "-c", str(self.ctx), "-np", str(self.parallel),
-                *self.extra_args]
+                "-c", str(self.ctx), "-np", str(self.parallel)]
+        if self.mmproj:
+            argv += ["--mmproj", self.mmproj]
+        return argv + self.extra_args
 
     def argv(self) -> list[str]:
         """The full command, wrapped in rocprofv3 when profiling."""

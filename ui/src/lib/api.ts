@@ -53,6 +53,7 @@ export interface Tensor { shape?: (number | string)[]; dtype?: string; bytes?: n
 
 export interface GraphNode {
   id: string; label: string; kind: string; column: number; order: number;
+  branch?: string;
   group?: string; provenance: string; dims?: Record<string, unknown>;
   notes?: string[] | null; op?: string;
   params?: number; flops?: number;
@@ -166,9 +167,9 @@ export const api = {
       body: JSON.stringify(p),
     }),
   chatState: () => j<ChatState>("/api/chat/state"),
-  chatStartServer: (profile = false) => j<ChatServer>("/api/chat/server/start", {
+  chatStartServer: (profile = false, model?: string) => j<ChatServer>("/api/chat/server/start", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ profile }),
+    body: JSON.stringify({ profile, ...(model ? { model } : {}) }),
   }),
   chatStopServer: () => j<ChatServer & { stopped: boolean }>("/api/chat/server/stop", { method: "POST" }),
 };
@@ -177,6 +178,8 @@ export const api = {
 export async function chatSend(body: {
   message: string; history: { role: string; content: string }[];
   profile: boolean; session_id?: string; max_tokens?: number; temperature?: number;
+  /** data: URLs, forwarded to llama.cpp as multimodal content parts */
+  images?: string[];
 }, onEvent: (kind: string, data: unknown) => void,
   signal?: AbortSignal): Promise<void> {
   const res = await fetch("/api/chat/send", {
@@ -254,6 +257,12 @@ export interface UnitInfo {
   model_path: string; port: number; binary: string;
   size_bytes: number; params: number; parts: UnitPart[];
   note: string; problem: string; configured: boolean; managed: boolean;
+  /** what this unit accepts as input: text, image, audio... */
+  accepts?: string[];
+  /** vision projector beside the weights, when there is one */
+  mmproj?: string | null;
+  /** a graph built by the backend for engines with no config to read */
+  arch?: { nodes: unknown[]; edges: unknown[]; params_total: number } | null;
 }
 
 export interface UnitCatalogue { units: UnitInfo[]; resident: string | null }

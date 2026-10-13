@@ -58,8 +58,9 @@ export function App() {
     <GpuProvider>
     <div className={"app" + (detailsOpen ? " with-details" : "")}>
       <div className="topbar">
-        <span className="brand" title={`InferScope — inference observability workbench, v${health?.version}`}>
-          INFER<b>SCOPE</b></span>
+        <button className="brand" onClick={() => go("index")}
+          title={`Back to the workbench${view === "index" ? "" : " — this is where the app starts"}`}>
+          INFER<b>SCOPE</b></button>
         <div className="spacer" />
         {health?.public_url && (
           <a className="pill" href={health.public_url} target="_blank" rel="noreferrer"
@@ -87,10 +88,6 @@ export function App() {
       </div>
 
       <nav className="nav">
-        <button className={view === "index" ? "active" : ""} onClick={() => go("index")}>
-          <span className="ic">◍</span>Start here
-        </button>
-
         <GpuPanel />
 
         <button className="nav-details" onClick={() => setDetailsOpen((o) => !o)}>

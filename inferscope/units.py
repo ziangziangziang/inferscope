@@ -48,6 +48,13 @@ class Unit:
     problem: str = ""
     configured: bool = False
     managed: bool = True         # False for the language engine (chat.py owns it)
+    #: what this unit accepts as input, so the UI can render one input box that
+    #: changes shape rather than a different box per engine
+    accepts: tuple[str, ...] = ("text",)
+    #: path to the vision projector, when there is one beside the weights
+    mmproj: Optional[str] = None
+    #: a computational graph for engines that have no config.json to read
+    arch: Optional[Any] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -59,11 +66,24 @@ class Unit:
             "note": self.note, "engine_role": self.engine_role,
             "problem": self.problem,
             "configured": self.configured, "managed": self.managed,
+            "accepts": list(self.accepts), "mmproj": self.mmproj,
+            "arch": self.arch,
         }
 
 
 #: filename patterns per engine, so a directory of unrelated checkpoints does not
 #: turn into a catalogue full of nonsense.
+#: What each engine's models accept as input. The UI renders one input box and
+#: changes its shape from this, so an engine that is not wired up yet still
+#: says what it would take rather than silently offering a text field.
+ACCEPTS: dict[str, tuple[str, ...]] = {
+    "asr": ("audio",),
+    "tts": ("text",),
+    "image": ("text",),
+    "video": ("text",),
+    "llm": ("text",),
+}
+
 PATTERNS: dict[str, tuple[str, ...]] = {
     "asr": ("*.bin", "*.gguf"),
     "tts": ("*.onnx", "*.pth", "*.pt", "*.ckpt"),
@@ -132,6 +152,7 @@ def discover(cfg, specs) -> list[Unit]:
                 key=f"{spec.key}/-", engine=spec.key, engine_label=spec.label,
                 model_label="no model installed", model_path="", port=spec.port,
                 binary=spec.binary, engine_role=spec.purpose,
+                accepts=ACCEPTS.get(spec.key, ("text",)),
                 problem=("no binary configured" if not spec.binary
                          else (spec.configured()[1] or "no model installed")),
                 configured=False))
@@ -146,6 +167,7 @@ def discover(cfg, specs) -> list[Unit]:
                 model_label=label, model_path=path, port=spec.port,
                 binary=spec.binary, size_bytes=_dir_size(path),
                 engine_role=spec.purpose,
+                accepts=ACCEPTS.get(spec.key, ("text",)),
                 configured=bool(spec.binary) and os.access(spec.binary, os.X_OK),
                 problem="" if spec.binary and os.access(spec.binary, os.X_OK)
                         else (spec.configured()[1] or "no binary configured"),
@@ -155,6 +177,28 @@ def discover(cfg, specs) -> list[Unit]:
     return units
 
 
+def mmproj_for(model_path: str) -> Optional[str]:
+    """The vision projector that belongs to *model_path*, if one was installed.
+
+    llama.cpp keeps the projector as a second GGUF beside the weights and needs
+    it passed explicitly; there is no way to infer it, so we look for a sibling
+    named mmproj*.gguf. Its absence is the honest reason a model cannot see.
+    """
+    d = os.path.dirname(model_path) or "."
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return None
+    for n in names:
+        low = n.lower()
+        if low.startswith("mmproj") and low.endswith(".gguf"):
+            p = os.path.join(d, n)
+            # only claim it if it is a real file, not a half-finished download
+            if os.path.isfile(p) and os.path.getsize(p) > 1 << 20:
+                return p
+    return None
+
+
 def _llm_units(cfg) -> list[Unit]:
     """The language-model server, expressed as units too.
 
@@ -162,16 +206,66 @@ def _llm_units(cfg) -> list[Unit]:
     to appear in the catalogue or "choose a model" would be blind to the biggest
     model on the box.
     """
-    if not cfg.chat_model_path or not os.path.exists(cfg.chat_model_path):
+    if not os.access(cfg.chat_server_bin, os.X_OK):
         return []
-    label = os.path.basename(cfg.chat_model_path)
-    return [Unit(
-        key=f"llm/{label}", engine="llm", engine_label="llama.cpp",
-        model_label=label, model_path=cfg.chat_model_path,
-        port=cfg.chat_port, binary=cfg.chat_server_bin,
-        engine_role="reads words, predicts the next one",
-        size_bytes=_dir_size(cfg.chat_model_path),
-        configured=os.access(cfg.chat_server_bin, os.X_OK),
-        managed=False,
-        note="loads through Run & capture",
-    )]
+    # Search the whole model tree, not just the one directory the configured
+    # checkpoint sits in — a vision model dropped in a sibling folder would
+    # otherwise be invisible to the picker. Both the configured model's own
+    # directory and its parent are walked, so a flat layout works too.
+    configured_dir = os.path.dirname(cfg.chat_model_path or "")
+    if getattr(cfg, "llm_models_dir", ""):
+        roots = [cfg.llm_models_dir]
+    elif configured_dir:
+        roots = [configured_dir, os.path.dirname(configured_dir)]
+    else:
+        roots = ["/workspace/models"]
+    found: list[Unit] = []
+    seen: set[str] = set()
+    for dirpath, _dirs, files in os.walk(roots[0]):
+        for f in sorted(files):
+            if not f.lower().endswith(".gguf") or f.lower().startswith("mmproj"):
+                continue
+            path = os.path.join(dirpath, f)
+            if path in seen:
+                continue
+            seen.add(path)
+            proj = mmproj_for(path)
+            label = os.path.basename(path)
+            found.append(Unit(
+                key=f"llm/{label}", engine="llm", engine_label="llama.cpp",
+                model_label=label, model_path=path,
+                port=cfg.chat_port, binary=cfg.chat_server_bin,
+                engine_role="reads words, predicts the next one",
+                size_bytes=_dir_size(path),
+                configured=True,
+                managed=False,
+                accepts=("text", "image") if proj else ("text",),
+                mmproj=proj,
+                note="sees pictures too" if proj else "loads through Run & capture",
+            ))
+    for extra in roots[1:]:
+        for dirpath, _dirs, files in os.walk(extra):
+            for f in sorted(files):
+                if not f.lower().endswith(".gguf") or f.lower().startswith("mmproj"):
+                    continue
+                path = os.path.join(dirpath, f)
+                if path in seen:
+                    continue
+                seen.add(path)
+                proj = mmproj_for(path)
+                label = os.path.basename(path)
+                found.append(Unit(
+                    key=f"llm/{label}", engine="llm", engine_label="llama.cpp",
+                    model_label=label, model_path=path,
+                    port=cfg.chat_port, binary=cfg.chat_server_bin,
+                    engine_role="reads words, predicts the next one",
+                    size_bytes=_dir_size(path),
+                    configured=True,
+                    managed=False,
+                    accepts=("text", "image") if proj else ("text",),
+                    mmproj=proj,
+                    note="sees pictures too" if proj else "loads through Run & capture",
+                ))
+    # the configured model first, so the default choice does not move
+    found.sort(key=lambda u: (u.model_path != cfg.chat_model_path, u.model_label))
+    return found

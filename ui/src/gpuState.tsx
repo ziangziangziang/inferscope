@@ -101,7 +101,9 @@ export function GpuProvider({ children }: { children: React.ReactNode }) {
         await engineOffload();
         setStarting(true);
         try {
-          await api.chatStartServer(false);
+          // the unit key, not the default: picking a vision checkpoint has to
+          // bring its projector with it
+          await api.chatStartServer(false, u.key);
         } finally {
           setStarting(false);
         }

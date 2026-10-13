@@ -104,13 +104,15 @@ def _norm_vision(cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 def _node(nid, label, kind, *, column=0, order=0, group=None, dims=None,
           provenance="derived", notes=None, repeat=None, op=None,
-          params=None, flops=None):
+          params=None, flops=None, branch=None):
     n: dict[str, Any] = {
         "id": nid, "label": label, "kind": kind, "column": column, "order": order,
         "provenance": provenance,
     }
     if group:
         n["group"] = group
+    if branch:
+        n["branch"] = branch
     if dims:
         n["dims"] = dims
     if notes:

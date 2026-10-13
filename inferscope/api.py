@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from . import chat, profiler, tunnel
+from . import asr_arch, chat, profiler, tunnel
 from .arch import build_graph, list_models, load_config
 from .capability import probe_all
 from .collectors import GpuCollector, SystemCollector
@@ -35,7 +35,7 @@ from .config import Config
 from .demo import seed_demo
 from .engines import LlamaCppAdapter, VLLMAdapter
 from .enginectl import EngineManager, build_engine_specs
-from .units import discover
+from .units import discover, mmproj_for
 from .kv import KVInputs, kv_cache_bytes
 from .schema import Event, EventKind, Provenance, Sample, Source
 from .store import SessionStore, TraceStore
@@ -535,6 +535,12 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         engine is the same swap.
         """
         found = await asyncio.to_thread(discover, cfg, state.engine_ctl.specs())
+        # whisper.cpp has no config to read, so its architecture comes from the
+        # hyperparameter block the engine prints when it loads the file.
+        hp = asr_arch.read_hparams(cfg.data_dir / "logs" / "engine-asr.log")
+        for u in found:
+            if u.engine == "asr" and hp:
+                u.arch = asr_arch.build_whisper_arch(hp, u.model_label)
         for u in found:
             if u.engine == "llm":
                 continue
@@ -713,7 +719,11 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         body = body or {}
         if not cfg.chat_manage:
             raise HTTPException(400, "managed mode is disabled (INFERSCOPE_CHAT_MANAGE=0)")
-        if not cfg.chat_model_path or not os.path.exists(cfg.chat_model_path):
+        # A request may name the checkpoint it wants, in which case the
+        # configured default is irrelevant — checking it first would refuse a
+        # perfectly good model just because the env var was never set.
+        want = str(body.get("model") or "").strip()
+        if not want and (not cfg.chat_model_path or not os.path.exists(cfg.chat_model_path)):
             raise HTTPException(400, "no model file configured at INFERSCOPE_CHAT_MODEL")
         if not os.path.exists(cfg.chat_server_bin):
             raise HTTPException(400, f"llama-server not found at {cfg.chat_server_bin}")
@@ -726,9 +736,22 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
             if not ok:
                 raise HTTPException(409, f"kernel tracing unavailable: {msg}")
             out_dir = str(cfg.data_dir / "captures" / f"chat-{int(time.time())}")
+        # Which checkpoint to load. Default to the configured one, but let the
+        # picker choose any llama.cpp checkpoint on the box, taking its vision
+        # projector with it when it has one.
+        model_path = cfg.chat_model_path
+        mmproj = mmproj_for(model_path) if model_path else None
+        if want:
+            found = discover(cfg, state.engine_ctl.specs())
+            match = next((u for u in found if u.engine == "llm" and u.key == want), None)
+            if match is None:
+                raise HTTPException(400, f"unknown model: {want}")
+            if not os.path.exists(match.model_path):
+                raise HTTPException(400, f"model file is gone: {match.model_path}")
+            model_path, mmproj = match.model_path, match.mmproj
         state.chat_server = chat.ManagedServer(
-            cfg.chat_server_bin, cfg.chat_model_path, cfg.chat_port,
-            ctx=cfg.chat_ctx, parallel=cfg.chat_parallel,
+            cfg.chat_server_bin, model_path, cfg.chat_port,
+            ctx=cfg.chat_ctx, parallel=cfg.chat_parallel, mmproj=mmproj,
             profile=profile, out_dir=out_dir, max_seconds=cfg.capture_max_s * 60)
         await asyncio.to_thread(state.chat_server.start,
                                 str(cfg.data_dir / "logs" / "llama-server.log"))
@@ -774,15 +797,27 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         """
         body = await req.json()
         message = (body.get("message") or "").strip()
-        if not message:
-            raise HTTPException(400, "message is required")
+        images = [i for i in (body.get("images") or [])
+                  if isinstance(i, str) and i.startswith("data:image/")]
+        if not message and not images:
+            raise HTTPException(400, "message or an image is required")
         base = _chat_base_url()
         if not base:
             raise HTTPException(409, "no chat endpoint: start a managed server first")
         history = body.get("history") or []
         messages = [{"role": m.get("role", "user"), "content": m.get("content", "")}
                     for m in history if m.get("content")]
-        messages.append({"role": "user", "content": message})
+        if images:
+            # OpenAI-shaped content parts: llama.cpp's /v1/chat/completions takes
+            # pictures this way, and only if the server was started with the
+            # matching projector.
+            parts: list[dict[str, Any]] = []
+            if message:
+                parts.append({"type": "text", "text": message})
+            parts += [{"type": "image_url", "image_url": {"url": u}} for u in images]
+            messages.append({"role": "user", "content": parts})
+        else:
+            messages.append({"role": "user", "content": message})
         want_profile = bool(body.get("profile", cfg.chat_profile_default))
         sid = _chat_session(body.get("session_id"))
         max_tokens = int(body.get("max_tokens") or cfg.chat_max_tokens)

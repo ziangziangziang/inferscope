@@ -101,6 +101,8 @@ export function makeSizer(nodes: ArchNode[]): (params: number) => number {
 export interface Placed {
   id: string;
   node: ArchNode;
+  /** branch name from the node, if the graph declares one */
+  branch?: string;
   x: number; y: number; z: number;
   w: number; d: number; h: number;
   /** index within its repeat group, for units */
@@ -181,15 +183,19 @@ export function layoutCaptions(layout: ArchLayout): Cap[] {
       ? iso((Math.min(...row.map((i) => i.x)) + Math.max(...row.map((i) => i.x + i.w))) / 2,
         back - 34, row[0].z)
       : iso(Math.min(...row.map((i) => i.x)) - 4, front + 26, row[0].z);
-    const isVision = col === 1;
+    // A graph that names its own branches (whisper's encoder/decoder) says so;
+    // only fall back to the text/vision split, which is an LLM-shaped guess.
     const vcount = row.find((i) => i.unitIndex != null)?.groupCount;
+    const named = row.find((i) => i.branch)?.branch;
+    const isVision = named ? named === "vision" : col === 1;
+    const title = named ? `${named} branch` : (isVision ? "vision branch" : "text branch");
+    const sub = named ? `${named === "front end" ? "no weights" : "the " + named + " stack"}`
+      : `${isVision ? "reads the image" : "reads the words"}${vcount ? ` · ${vcount} blocks` : ""}`;
     out.push({
       key: `branch-${col}`, at, anchor: col === backCol ? "middle" : "end",
-      title: isVision ? "vision branch" : "text branch",
-      sub: `${isVision ? "reads the image" : "reads the words"}${vcount ? ` · ${vcount} blocks` : ""}`,
+      title, sub,
       color: "#3d4a3e", cls: "br-t", subCls: "br-s",
-      halfW: capW(isVision ? "vision branch" : "text branch",
-        `${isVision ? "reads the image" : "reads the words"}${vcount ? ` · ${vcount} blocks` : ""}`), lines: 1,
+      halfW: capW(title, sub), lines: 1,
     });
     for (const it of row) branchOf.set(it.id, col);
   }

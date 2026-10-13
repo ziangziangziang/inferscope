@@ -16,7 +16,13 @@ function fmtBytes(n: number): string {
   return `${(n / 2 ** 20).toFixed(1)} MiB`;
 }
 
-export function AsrTask({ loaded }: { loaded: boolean }) {
+/**
+ * `embedded` drops the card chrome so this can sit inside the shared input box,
+ * which is how every model's input is presented. The controls and their
+ * behaviour are identical either way.
+ */
+export function AsrTask({ loaded, embedded = false }:
+  { loaded: boolean; embedded?: boolean }) {
   const [file, setFile] = useState<File | null>(null);
   const [source, setSource] = useState<"file" | "mic">("file");
   const [res, setRes] = useState<AsrResult | null>(null);
@@ -54,20 +60,23 @@ export function AsrTask({ loaded }: { loaded: boolean }) {
   const rtf = res && res.audio_s && res.audio_s > 0 ? res.audio_s / res.seconds : null;
 
   return (
-    <div className="task" data-testid="asr-task">
-      <div className="task-head">
-        <div>
-          <h3>Speech to text</h3>
-          <p className="task-sub">Whisper on the GPU. Transcribes speech to text.</p>
+    <div className={embedded ? "asr-embed" : "task"} data-testid="asr-task">
+      {embedded ? null : (
+        <div className="task-head">
+          <div>
+            <h3>Speech to text</h3>
+            <p className="task-sub">Whisper on the GPU. Transcribes speech to text.</p>
+          </div>
         </div>
-        <div className="task-sources" role="tablist" aria-label="audio source">
-          <button role="tab" aria-selected={source === "file"}
-            className={"chip" + (source === "file" ? " on" : "")}
-            onClick={() => setSource("file")}>file</button>
-          <button role="tab" aria-selected={source === "mic"}
-            className={"chip" + (source === "mic" ? " on" : "")}
-            onClick={() => setSource("mic")}>microphone</button>
-        </div>
+      )}
+
+      <div className="task-sources" role="tablist" aria-label="audio source">
+        <button role="tab" aria-selected={source === "file"}
+          className={"chip" + (source === "file" ? " on" : "")}
+          onClick={() => setSource("file")}>file</button>
+        <button role="tab" aria-selected={source === "mic"}
+          className={"chip" + (source === "mic" ? " on" : "")}
+          onClick={() => setSource("mic")}>microphone</button>
       </div>
 
       {!loaded ? (

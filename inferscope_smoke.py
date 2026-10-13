@@ -58,9 +58,9 @@ def main():
         for view in VIEWS:
             try:
                 if view == "index":
-                    # Start here is the one item still in the rail; everything
-                    # else moved into the details panel.
-                    pg.click(".nav button:has-text('Start here')", timeout=8000)
+                    # The workbench is the landing page and the logo is the way
+                    # back to it; the rail holds only the GPU panel.
+                    pg.click(".topbar button.brand", timeout=8000)
                 else:
                     open_details(pg)
                     pg.click(f"[data-testid='details-panel'] button:has-text('{ {'machine':'Status','run':'Run & capture','analyze':'Analyze','arch':'Architecture','memory':'Memory & KV','mm':'Multimodal'}[view] }')", timeout=8000)
@@ -114,7 +114,7 @@ def main():
             pg.screenshot(path=str(SHOTS / "arch-expanded.png"))
 
         # --- the scene: engine -> model -> architecture -> sub-layers ---
-        pg.click(".nav button:has-text('Start here')")
+        pg.click(".topbar button.brand")
         # the scene draws from the chosen unit, so make sure one is chosen
         if not pg.query_selector("svg.scene-svg .tier-model"):
             # pick the language model the way a reader would: off the picker.
@@ -203,7 +203,7 @@ def main():
                 pg.screenshot(path=str(SHOTS / "scene-unit.png"))
 
         # --- engines + ASR, both on the first page ---
-        pg.click(".nav button:has-text('Start here')")
+        pg.click(".topbar button.brand")
         try:
             pg.wait_for_selector('[data-testid="unit-picker"]', timeout=15000)
         except Exception:

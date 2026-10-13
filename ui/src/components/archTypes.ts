@@ -11,6 +11,9 @@ import type { Graph, GraphEdge, GraphNode } from "../lib/api";
 export interface ArchNode extends Omit<GraphNode, "params" | "notes" | "repeat"> {
   /** analytic parameter count; 0 for data-flow markers with no weights */
   params: number;
+  /** what this node belongs to: "encoder", "decoder", "front end"...
+   *  Absent means fall back to the old column-based naming. */
+  branch?: string;
   notes?: (string | null)[] | null;
   repeat?: {
     count: number;
@@ -20,6 +23,8 @@ export interface ArchNode extends Omit<GraphNode, "params" | "notes" | "repeat">
 
 export interface ArchGraph extends Omit<Graph, "nodes"> {
   nodes: ArchNode[];
+  /** whole-model parameter total, when the builder could derive one */
+  params_total?: number;
 }
 
 export function toArch(g: Graph | null | undefined): ArchGraph | null {
@@ -28,7 +33,7 @@ export function toArch(g: Graph | null | undefined): ArchGraph | null {
   // un-normalised template nodes, and spreading it in would smuggle the
   // optional `params` back into the required one.
   const norm = (n: GraphNode): ArchNode => ({
-    id: n.id, label: n.label, kind: n.kind,
+    id: n.id, label: n.label, kind: n.kind, branch: n.branch,
     column: n.column, order: n.order, group: n.group, provenance: n.provenance,
     dims: n.dims, op: n.op, flops: n.flops,
     param_share: n.param_share, flop_share: n.flop_share,

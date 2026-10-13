@@ -810,3 +810,42 @@ button.btn.primary:disabled { opacity: 0.45; }
   margin-top: 10px; border-top: 1px solid var(--line); font-size: 11px;
 }
 .details .legend-inline .info-btn { margin: 0; }
+
+/* The logo is the way home now that the rail holds only the GPU panel. */
+.topbar .brand {
+  background: transparent; border: 1px solid transparent; cursor: pointer;
+  font: inherit; color: inherit; padding: 2px 4px; border-radius: 6px;
+}
+.topbar .brand:hover { background: var(--bg2); border-color: var(--line); }
+
+/* ---- the shared input box ------------------------------------------- */
+/* One box for every model; only the format it accepts changes. */
+.input-box {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg1); padding: 8px;
+}
+.in-text {
+  flex: 1 1 320px; min-width: 0; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg0); color: var(--fg); font: inherit;
+}
+.in-text:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.in-audio { flex: 1 1 100%; display: flex; flex-direction: column; gap: 6px; }
+.in-audio .sp-row { display: flex; gap: 8px; align-items: center; }
+.in-audio .sp-row input[type="file"] { flex: 1 1 auto; min-width: 0; }
+.in-audio .sp-mic { display: flex; gap: 8px; align-items: center; }
+.in-audio .task-sources { display: flex; gap: 6px; }
+.in-problem, .in-reason { flex: 1 0 100%; margin: 2px 2px 0; font-size: 11px; }
+.asr-embed { display: flex; flex-direction: column; gap: 8px; }
+
+.in-thumb { position: relative; display: inline-flex; }
+.in-thumb img {
+  height: 44px; width: 44px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--line); display: block;
+}
+.in-thumb-x {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px;
+  border-radius: 50%; border: 1px solid var(--line2); background: var(--bg1);
+  color: var(--fg); font: inherit; line-height: 1; cursor: pointer; padding: 0;
+}
