@@ -153,17 +153,17 @@ def main():
             pg.wait_for_timeout(700)
 
             # clicking the model unfolds the architecture
-            # clicking the model unfolds the architecture. It is a toggle, and
-            # the diagram arrives from two chained requests (which model, then
-            # its architecture), so: click, wait, and click once more if the
-            # first click landed on an already-open panel.
-            for _ in range(2):
+            # Clicking the model unfolds the architecture. It is a toggle, so
+            # only click while the panel is closed — clicking an open panel
+            # would fold it straight back up. The diagram then arrives from two
+            # chained requests (which model, then its architecture), so wait
+            # for it rather than guessing.
+            if not pg.query_selector(".scene-wrap.side-open"):
                 pg.click("svg.scene-svg .tier-model")
-                try:
-                    pg.wait_for_selector(".arch-svg .arch-boxes > g", timeout=12000)
-                    break
-                except Exception:
-                    pass
+            try:
+                pg.wait_for_selector(".arch-svg .arch-boxes > g", timeout=25000)
+            except Exception:
+                pass
             boxes = pg.evaluate(
                 "() => document.querySelectorAll('.arch-svg .arch-boxes > g').length")
             print("arch boxes:", boxes)

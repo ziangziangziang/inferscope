@@ -108,6 +108,8 @@ def main() -> None:
                          "no API proxy) — needed for binary uploads")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--mic", action="store_true",
+                    help="give the browser a synthetic microphone")
     ap.add_argument("--width", type=int, default=1500)
     ap.add_argument("--height", type=int, default=1100)
     ap.add_argument("--full", action="store_true", help="full page screenshot")
@@ -140,8 +142,14 @@ def main() -> None:
     errors: list[str] = []
     bad: list[str] = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=find_browser(),
-                                    args=["--force-color-profile=srgb"])
+        launch_args = ["--force-color-profile=srgb"]
+        if args.mic:
+            # Chromium's synthetic microphone: lets the capture path be tested
+            # on a box with no audio hardware.
+            launch_args += ["--use-fake-device-for-media-stream",
+                            "--use-fake-ui-for-media-stream",
+                            "--autoplay-policy=no-user-gesture-required"]
+        browser = p.chromium.launch(executable_path=find_browser(), args=launch_args)
         page = browser.new_page(viewport={"width": args.width, "height": args.height},
                                 device_scale_factor=args.scale)
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}")

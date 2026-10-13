@@ -82,6 +82,12 @@ export function useRecorder() {
   const chunks = useRef<Float32Array[]>([]);
   const ticker = useRef<number | null>(null);
   const startedAt = useRef(0);
+  const stateRef = useRef<RecState>("idle");
+  /* The rate the mic actually opened at. It has to be read while the context
+   * is still open — stop() closes the context, and reading it afterwards fell
+   * back to 16 kHz, which quietly mislabels a 48 kHz recording and plays it
+   * back about three times too fast. */
+  const rateRef = useRef(TARGET_RATE);
 
   const supported = typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
@@ -96,6 +102,7 @@ export function useRecorder() {
   }, []);
 
   useEffect(() => cleanup, [cleanup]);
+  useEffect(() => { stateRef.current = state; }, [state]);
 
   const start = useCallback(async () => {
     setMessage("");
@@ -108,6 +115,14 @@ export function useRecorder() {
       stream.current = s;
       const ac = new AudioContext();
       ctx.current = ac;
+      rateRef.current = ac.sampleRate;
+      // A context created outside a user gesture starts suspended, and a
+      // suspended context never fires onaudioprocess — the recording would
+      // look like it ran and come back with no samples at all. resume() can
+      // itself hang when the browser refuses, so never block the take on it.
+      if (ac.state === "suspended") {
+        await Promise.race([ac.resume(), new Promise((r) => setTimeout(r, 300))]);
+      }
       chunks.current = [];
       const src = ac.createMediaStreamSource(s);
       // ScriptProcessor is deprecated but is the only node that hands back raw
@@ -153,7 +168,8 @@ export function useRecorder() {
   }, [supported, cleanup]);
 
   const stop = useCallback(async (): Promise<Recording | null> => {
-    if (state !== "recording") return null;
+    if (stateRef.current !== "recording") return null;
+    const rate = rateRef.current;
     cleanup();
     setState("idle");
     const total = chunks.current.reduce((a, c) => a + c.length, 0);
@@ -161,7 +177,6 @@ export function useRecorder() {
     const flat = new Float32Array(total);
     let at = 0;
     for (const c of chunks.current) { flat.set(c, at); at += c.length; }
-    const rate = ctx.current?.sampleRate ?? TARGET_RATE;
     try {
       const out = await resample(flat, rate);
       const secs = out.length / TARGET_RATE;
@@ -172,7 +187,7 @@ export function useRecorder() {
       setMessage(`could not prepare the audio: ${(e as Error)?.message ?? e}`);
       return null;
     }
-  }, [state, cleanup]);
+  }, [cleanup]);
 
   return { state, seconds, message, supported, start, stop, reset: () => { setMessage(""); setState("idle"); setSeconds(0); } };
 }

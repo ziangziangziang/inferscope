@@ -44,7 +44,12 @@ export function AsrTask({ loaded }: { loaded: boolean }) {
     }
   }, [rec, run]);
 
-  useEffect(() => () => { if (rec.state === "recording") void rec.stop(); }, [rec.state, rec]);
+  // Release the microphone if the page goes away mid-take. This must key on
+  // rec.stop (stable) and not on rec.state or rec: the hook returns a fresh
+  // object every render, and the seconds ticker re-renders twice a second, so a
+  // cleanup keyed on either of those tore the recording down ~200ms in — which
+  // is what made it look like the microphone quit immediately.
+  useEffect(() => () => { void rec.stop(); }, [rec.stop]);
 
   const rtf = res && res.audio_s && res.audio_s > 0 ? res.audio_s / res.seconds : null;
 
