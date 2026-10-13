@@ -100,6 +100,17 @@ def main():
 
         # --- the scene: engine -> model -> architecture -> sub-layers ---
         pg.click(".nav button:has-text('Start here')")
+        # the scene draws from the resident unit, so make sure one is resident
+        if not pg.query_selector("svg.scene-svg .tier-model"):
+            st = pg.query_selector('button:has-text("start engine")')
+            if st:
+                st.click()
+                try:
+                    pg.wait_for_selector("svg.scene-svg .tier-model", timeout=180000)
+                except Exception:
+                    fails.append("scene: model block never rendered (engine did not start)")
+            else:
+                fails.append("scene: model block never rendered")
         try:
             pg.wait_for_selector("svg.scene-svg .tier-model", timeout=15000)
         except Exception:
@@ -162,15 +173,29 @@ def main():
         # --- engines + ASR, both on the first page ---
         pg.click(".nav button:has-text('Start here')")
         try:
-            pg.wait_for_selector('[data-testid="engine-rail"]', timeout=15000)
+            pg.wait_for_selector('[data-testid="unit-picker"]', timeout=15000)
         except Exception:
-            fails.append("index: no engine rail on the first page")
-        chips = pg.evaluate("() => document.querySelectorAll('.rail-chip').length")
-        print("engine chips:", chips)
-        if chips < 4:
-            fails.append(f"index: only {chips} engine chips on the first page")
-        if not pg.query_selector('.rail-chip[data-engine="asr"]'):
-            fails.append("index: asr chip missing from the rail")
+            fails.append("index: no unit picker on the first page")
+        models = pg.evaluate("() => document.querySelectorAll('[data-unit]').length")
+        print("unit chips:", models)
+        if models < 2:
+            fails.append(f"index: only {models} units in the catalogue")
+
+        # Start from a known state. Residency has two owners — enginectl and
+        # chat.py's language server — and the scene reads both, so both have to
+        # be cleared or there is no empty->load transition to assert on.
+        pg.evaluate("() => fetch('/api/engines/offload', {method:'POST'})")
+        stop = pg.query_selector('button:has-text("stop engine")')
+        if stop:
+            stop.click()
+        pg.wait_for_timeout(9000)
+
+        # the plate starts bare and says so, so it is not mistaken for a bug
+        pg.wait_for_timeout(1200)
+        if pg.query_selector(".stack [data-block]"):
+            fails.append("index: scene drew blocks with nothing loaded")
+        if not pg.query_selector(".stack-empty"):
+            fails.append("index: empty stack gave no explanation")
 
         # microphone must degrade with a sentence, not a crash
         mic = pg.query_selector('.chip:has-text("microphone")')
@@ -190,13 +215,30 @@ def main():
             pg.click('.chip:has-text("file")')
 
         # load asr from page 1, then transcribe the bundled sample
-        load = pg.query_selector('.rail-chip[data-engine="asr"] button.primary')
-        if load:
-            load.click()
+        asr_chip = pg.query_selector('[data-unit^="asr/"]:not([disabled])')
+        if asr_chip:
+            asr_chip.click()
+            # the scene must animate in: phase passes through "loading"
+            saw_loading = False
+            for _ in range(40):
+                ph = pg.evaluate("() => document.querySelector('.stack')?.dataset.phase || ''")
+                if ph == "loading":
+                    saw_loading = True
+                    break
+                if ph == "loaded":
+                    break
+                pg.wait_for_timeout(100)
+            if not saw_loading:
+                fails.append("index: loading a unit did not animate")
             try:
-                pg.wait_for_selector('.rail-chip[data-engine="asr"].on', timeout=180000)
+                pg.wait_for_selector('[data-testid="resident-strip"] .resident-name', timeout=180000)
             except Exception:
                 fails.append("index: asr never became resident from page 1")
+            blocks = pg.evaluate("() => document.querySelectorAll('.stack [data-block]').length")
+            print("stack blocks:", blocks)
+            if blocks < 2:
+                fails.append(f"index: stack drew {blocks} blocks for a loaded unit")
+            caps = pg.inner_text(".stack-caps") if pg.query_selector(".stack-caps") else ""
             try:
                 pg.wait_for_selector('[data-testid="asr-task"]', timeout=15000)
             except Exception:
@@ -221,12 +263,14 @@ def main():
         else:
             print("no sample audio on this host, skipping transcription")
 
-        off = pg.query_selector('.rail-chip[data-engine="asr"] button:has-text("offload")')
+        off = pg.query_selector('[data-testid="resident-strip"] button:has-text("offload")')
         if off:
             off.click()
-            pg.wait_for_timeout(6000)
-            if pg.query_selector('.rail-chip[data-engine="asr"].on'):
+            pg.wait_for_timeout(7000)
+            if pg.query_selector("[data-testid='resident-strip'] .resident-name"):
                 fails.append("index: offload from page 1 did not release the engine")
+            if pg.query_selector(".stack [data-block]"):
+                fails.append("index: blocks still drawn after offload")
 
         # Memory KV calc produces a number
         pg.click(".nav button:has-text('Memory')")

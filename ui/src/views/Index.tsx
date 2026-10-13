@@ -5,8 +5,10 @@ import { HostScene, type Node } from "../components/Scene";
 import { SceneDetail } from "../components/SceneDetail";
 import { toArch, type Sel } from "../components/archTypes";
 import { Info } from "../components/Info";
-import { EngineRail, useEngineStatus } from "../components/EngineRail";
+import { ResidentStrip, useEngineStatus } from "../components/EngineRail";
 import { AsrTask } from "../components/tasks/AsrTask";
+import { UnitPicker, useSwapEngine } from "../components/UnitPicker";
+import { units as fetchUnits, type UnitInfo } from "../lib/api";
 
 /**
  * The front door.
@@ -39,6 +41,64 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
   // Engine load/offload lives on this page: one place to drive the machine.
   const { status: engStatus, refresh: refreshEngines } = useEngineStatus();
   const resident = engStatus?.loaded ?? null;
+
+  // The catalogue of (engine, model) pairs, and the swap that drives the scene.
+  const [catalogue, setCatalogue] = useState<UnitInfo[]>([]);
+  const { swap, swapTo } = useSwapEngine();
+  useEffect(() => {
+    let dead = false;
+    const tick = () => fetchUnits()
+      .then((c) => { if (!dead) setCatalogue(c.units); })
+      .catch(() => {});
+    tick();
+    const id = setInterval(tick, 6000);
+    return () => { dead = true; clearInterval(id); };
+  }, []);
+
+  // The unit the scene draws.
+  //
+  // It follows the user's *choice*, not the boot completing: a whisper.cpp load
+  // takes ~20s, and tying the scene to `resident` left the plate bare for the
+  // whole of it, so there was nothing for the load animation to animate.
+  const [chosen, setChosen] = useState<UnitInfo | null>(null);
+  const withParams = (u: UnitInfo) => ({
+    ...u,
+    params: u.engine === "llm"
+      ? (arch?.nodes ?? []).reduce((a, n) => a + (n.params ?? 0), 0)
+      : u.params,
+  });
+  // Residency has two owners: enginectl owns everything it starts, and chat.py
+  // owns the language-model server. The scene has to see both, or the plate
+  // shows nothing while llama.cpp is happily running.
+  const effectiveResident = resident ?? ((chat?.ready || chat?.server?.running) ? "llm" : null);
+  const residentUnit = effectiveResident
+    ? catalogue.find((x) => x.engine === effectiveResident) : null;
+  const activeUnit = useMemo(() => {
+    if (chosen) return withParams(chosen);
+    if (residentUnit) return withParams(residentUnit);
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosen, residentUnit, arch]);
+
+  // once the engine we asked for is actually up, stop tracking the intent
+  useEffect(() => {
+    if (chosen && resident === chosen.engine) setChosen(null);
+  }, [resident, chosen]);
+
+  const shownEngine = effectiveResident ?? chosen?.engine ?? null;
+
+  const pickUnit = async (u: UnitInfo) => {
+    setErr(null);
+    setChosen(u);
+    try {
+      await swapTo(u);
+    } catch (e) {
+      setErr(String((e as Error)?.message ?? e));
+      setChosen(null);
+    } finally {
+      refreshEngines();
+    }
+  };
 
   // Whether the detail panel is showing the model itself. The scene stays the
   // overview either way; the architecture lives in the panel.
@@ -189,15 +249,8 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
               </span>
             </div>
             <HostScene hardware={hardware} hostTitle="HOST"
-              arch={arch} sel={sel}
-              onSelect={pick} onBackground={() => setSel(null)}
-              engine={{
-                running,
-                engine: "llama.cpp",
-                model: running ? (server?.model ?? "model loaded")
-                  : (arch?.model_id ?? "—"),
-                tokens: leaves.length,
-              }} />
+              arch={arch} sel={sel} unit={swap.phase === "evicting" ? null : activeUnit}
+              onSelect={pick} onBackground={() => setSel(null)} />
           </div>
           <div className="scene-side">
             {sel ? (
@@ -210,7 +263,18 @@ export function Index({ onOpen }: { onOpen: (view: "run" | "analyze" | "arch") =
         </div>
       </div>
 
-      <EngineRail status={engStatus} onChanged={refreshEngines} />
+      <div className="pick-wrap">
+        <div className="scene-title">
+          choose what should be on the GPU — an engine and one of its models
+          <span className="scene-key">the blocks above follow this choice</span>
+        </div>
+        <UnitPicker catalogue={catalogue} resident={shownEngine} onPick={pickUnit}
+          swap={swap} disabled={swap.phase !== "idle"} />
+      </div>
+
+      <ResidentStrip status={engStatus} unit={activeUnit}
+        llmRunning={!!chat?.ready || !!chat?.server?.running}
+        onChanged={refreshEngines} />
 
       {resident === "asr" ? <AsrTask loaded={!!resident} /> : null}
       {resident === null ? (

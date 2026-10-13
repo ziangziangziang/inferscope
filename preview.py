@@ -117,6 +117,8 @@ def main() -> None:
                     help="selector to click before shooting (repeatable)")
     ap.add_argument("--hover", action="append", default=[])
     ap.add_argument("--wait", type=float, default=2.5)
+    ap.add_argument("--after", type=float, default=0.0,
+                    help="seconds to wait after clicks/hover, before evaluating")
     ap.add_argument("--scale", type=float, default=2.0)
     ap.add_argument("--eval", default=None, help="JS to run before shooting")
     args = ap.parse_args()
@@ -202,6 +204,8 @@ def main() -> None:
                 page.wait_for_timeout(600)
             except Exception as e:                            # noqa: BLE001
                 errors.append(f"hover {sel}: {e}")
+        if args.after:
+            page.wait_for_timeout(int(args.after * 1000))
         if args.eval:
             print("eval ->", page.evaluate(args.eval))
 

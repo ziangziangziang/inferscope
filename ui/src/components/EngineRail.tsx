@@ -8,8 +8,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  engines, engineLoad, engineOffload, api, type EngineStatus, type EngineInfo,
+  engines, engineOffload, api, type EngineStatus,
 } from "../lib/api";
+import type { Unit } from "./unitModel";
 import { useApp } from "../state";
 
 export function useEngineStatus(pollMs = 4000) {
@@ -35,8 +36,16 @@ function uptime(s: number): string {
   return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
 }
 
-export function EngineRail({ status, onChanged }:
-  { status: EngineStatus | null; onChanged: () => void }) {
+/**
+ * Resident status: what is on the GPU, how much of it, and a way to let go.
+ *
+ * Loading moved to the unit picker above, which can also choose *which* model.
+ * Keeping a second set of load buttons here meant two controls for one action,
+ * so this is status and release only.
+ */
+export function ResidentStrip({ status, unit, llmRunning, onChanged }:
+  { status: EngineStatus | null; unit: Unit | null; llmRunning: boolean;
+    onChanged: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -54,17 +63,6 @@ export function EngineRail({ status, onChanged }:
     return () => clearInterval(id);
   }, [sid]);
 
-  const load = async (key: string) => {
-    setBusy(key); setErr(null); setNote(null);
-    try {
-      const r = await engineLoad(key);
-      if (!r.ok) setErr(r.error || "could not load");
-      else if (r.evicted) setNote(`${r.evicted} was offloaded to make room for ${key}.`);
-      else if (r.already) setNote(`${key} was already loaded.`);
-    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
-    finally { setBusy(null); onChanged(); }
-  };
-
   const offload = async (key: string) => {
     setBusy(key); setErr(null); setNote(null);
     try {
@@ -74,15 +72,20 @@ export function EngineRail({ status, onChanged }:
     finally { setBusy(null); onChanged(); }
   };
 
-  const engines_ = status?.engines ?? [];
+  const spec = (status?.engines ?? []).find((e) => e.key === status?.loaded);
 
   return (
-    <section className="rail" data-testid="engine-rail">
+    <section className="rail" data-testid="resident-strip">
       <div className="rail-head">
-        <h3>Engines</h3>
-        <span className="faint">
-          one GPU — loading an engine offloads whatever held it
-        </span>
+        <h3>On the GPU</h3>
+        {status?.loaded ? (
+          <>
+            <b className="resident-name">{unit?.model_label ?? status.loaded}</b>
+            <span className="faint">{spec?.label ?? status.loaded} · pid {status.pid} · up {uptime(status.uptime_s)}</span>
+          </>
+        ) : (
+          <span className="faint">nothing resident — the card is free</span>
+        )}
         <div className="rail-vram">
           {vram.total ? (
             <>
@@ -94,40 +97,14 @@ export function EngineRail({ status, onChanged }:
               </span>
             </>
           ) : null}
+          {status?.loaded ? (
+            <button className="btn sm" onClick={() => offload(status.loaded!)} disabled={busy === status.loaded}>
+              {busy === status.loaded ? "…" : "offload"}
+            </button>
+          ) : null}
         </div>
       </div>
-
-      <div className="rail-chips">
-        {engines_.map((e: EngineInfo) => {
-          const resident = status?.loaded === e.key;
-          const st = resident ? "resident" : e.configured ? "ready" : "unavailable";
-          return (
-            <div key={e.key} className={`rail-chip ${resident ? "on" : ""}`} data-engine={e.key}>
-              <span className="rail-ico" aria-hidden>{FAMILY_ICON[e.family] ?? "◧"}</span>
-              <div className="rail-meta">
-                <b>{e.label || e.key}</b>
-                <span className="rail-state" data-state={st}>
-                  {resident ? `resident · up ${uptime(status!.uptime_s)}` : e.configured ? "not loaded" : e.problem}
-                </span>
-              </div>
-              {resident ? (
-                <button className="btn sm" onClick={() => offload(e.key)} disabled={busy === e.key}>
-                  {busy === e.key ? "…" : "offload"}
-                </button>
-              ) : (
-                <button className="btn sm primary" onClick={() => load(e.key)}
-                  disabled={!e.configured || busy === e.key}
-                  title={e.configured ? `load ${e.label} (offloads the current one)` : e.problem}>
-                  {busy === e.key ? "…" : "load"}
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {err ? <div className="notice bad">{err}</div> : null}
-      {note ? <div className="notice">{note}</div> : null}
     </section>
   );
 }
+

@@ -109,6 +109,20 @@ class Config:
     video_model: str = field(default_factory=lambda: _env("INFERSCOPE_VIDEO_MODEL", ""))
     video_port: int = field(default_factory=lambda: _env_int("INFERSCOPE_VIDEO_PORT", 8085))
 
+    # Model directories, so the catalogue discovers every checkpoint on disk
+    # instead of one configured model per engine. Empty falls back to the
+    # directory of that engine's configured model.
+    asr_models_dir: str = field(default_factory=lambda: _env(
+        "INFERSCOPE_ASR_MODELS_DIR", "/workspace/models/whisper"))
+    tts_models_dir: str = field(default_factory=lambda: _env(
+        "INFERSCOPE_TTS_MODELS_DIR", "/workspace/models/tts"))
+    image_models_dir: str = field(default_factory=lambda: _env(
+        "INFERSCOPE_IMAGE_MODELS_DIR", "/workspace/models/image"))
+    video_models_dir: str = field(default_factory=lambda: _env(
+        "INFERSCOPE_VIDEO_MODELS_DIR", "/workspace/models/video"))
+    llm_models_dir: str = field(default_factory=lambda: _env(
+        "INFERSCOPE_LLM_MODELS_DIR", "/workspace/models"))
+
     @property
     def bind_url(self) -> str:
         return f"http://{self.host}:{self.port}"

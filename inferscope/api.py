@@ -35,6 +35,7 @@ from .config import Config
 from .demo import seed_demo
 from .engines import LlamaCppAdapter, VLLMAdapter
 from .enginectl import EngineManager, build_engine_specs
+from .units import discover
 from .kv import KVInputs, kv_cache_bytes
 from .schema import Event, EventKind, Provenance, Sample, Source
 from .store import SessionStore, TraceStore
@@ -524,6 +525,28 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
     # ---- engine load / offload ------------------------------------------
     # One heavy engine at a time on one GPU: loading one offloads whatever held
     # it, and the response says so rather than leaving VRAM unexplained.
+
+    @app.get("/api/units")
+    async def units():
+        """Every (engine, model) pair this machine can load.
+
+        The scene and the picker are both driven from this: a "block" in the
+        diagram is a unit, so choosing a different checkpoint or a different
+        engine is the same swap.
+        """
+        found = await asyncio.to_thread(discover, cfg, state.engine_ctl.specs())
+        for u in found:
+            if u.engine == "llm":
+                continue
+            spec = state.engine_ctl.spec(u.engine)
+            if spec is None:
+                u.problem = "no such engine"
+            elif not u.binary or not os.path.exists(u.binary):
+                u.problem = f"binary not found: {u.binary}"
+            elif not u.configured:
+                u.problem = u.problem or "binary is not executable"
+        return {"units": [u.as_dict() for u in found],
+                "resident": state.engine_ctl.loaded}
 
     @app.get("/api/engines")
     async def engines_status():

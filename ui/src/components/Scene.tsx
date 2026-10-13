@@ -28,6 +28,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Box, Ground, Bounds, iso, depth } from "./iso";
 import { fmtParams } from "./sceneModel";
+import { layoutUnit, useStackAnimation, type Unit, type StackBlock } from "./unitModel";
 import type { ArchGraph, ArchNode, Sel } from "./archTypes";
 
 const COS30 = Math.cos(Math.PI / 6);
@@ -162,78 +163,98 @@ function HardwareCaption({ node, at, dim }:
 }
 
 /* ------------------------------------------------------------------ */
-/* the hanging tower                                                   */
+/* the loaded stack                                                    */
 /* ------------------------------------------------------------------ */
 
-function Tower({ engine, running, modelName, params, sel, onSelect }:
-  { engine: EngineState; running: boolean; modelName: string; params: number;
-    sel: Sel; onSelect: (s: NonNullable<Sel>) => void }) {
-  const zE = TOWER_Z, zM = TOWER_Z + TOWER_H;
-  const dimEng = sel != null && sel.kind !== "engine";
-  // The model slab stays lit while the selection is anywhere inside it — it is
-  // the thing you are inside of, so dimming it would lose the "where am I".
-  const insideModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
-  const dimMod = sel != null && sel.kind !== "model" && !insideModel;
+/**
+ * The loaded stack: one engine outline, the model's weights on top of it.
+ *
+ * Entirely data-driven from a `Unit`, so llama.cpp, whisper.cpp and whatever
+ * comes next all render through the same path. When nothing is loaded the plate
+ * is bare — which is both honest and what gives a load somewhere to come from.
+ */
+function Stack({ blocks, unit, sel, onSelect }:
+  { blocks: StackBlock[]; unit: Unit | null; sel: Sel;
+    onSelect: (s: NonNullable<Sel>) => void }) {
+  const anim = useStackAnimation(unit);
 
-  // plate-sized weight-matrix artwork for the model slab
-  const wCells = Array.from({ length: 6 * 4 }, (_, i) => ({
-    u: 0.07 + (i % 6) * 0.148, v: 0.10 + Math.floor(i / 6) * 0.20, w: 0.108, h: 0.15,
-  }));
-  const eCells = Array.from({ length: 4 * 3 }, (_, i) => ({
-    u: 0.10 + (i % 4) * 0.215, v: 0.14 + Math.floor(i / 4) * 0.25, w: 0.165, h: 0.18,
-  }));
-
-  // Anchored just off the tower's right vertex, clear of both slabs.
   const labelAt = (z: number): [number, number] => {
     const [x, y] = iso(PX1, PY0, z);
     return [x + 14, y];
   };
 
-  return (
-    <g className="tower">
-      {/* the engine: software, so it is drawn as an outline */}
-      <g className={dimEng ? "dimmed" : undefined}>
-        <Box x={PX0} y={PY0} z={zE} w={PW} d={PD} h={TOWER_H}
-          color="#4f8f6a" ghost top={0.10} left={0.07} right={0.04} cellOpacity={0.30}
-          cells={running ? eCells : undefined} className="tier-engine"
-          tip={running
-            ? `${engine.engine} — the inference engine, running`
-            : `${engine.engine} — the inference engine`}
-          onClick={() => onSelect({ kind: "engine" })}
-          selected={sel?.kind === "engine"} />
-        <text x={labelAt(zE + TOWER_H / 2)[0]}
-          y={labelAt(zE + TOWER_H / 2)[1] - 2} textAnchor="start"
-          className="tier-name">llama.cpp</text>
-        <text x={labelAt(zE + TOWER_H / 2)[0]}
-          y={labelAt(zE + TOWER_H / 2)[1] + 13} textAnchor="start"
-          className="tier-role">{running ? "engine · running" : "engine · idle"}</text>
-      </g>
+  const engineZ = TOWER_Z;
+  const modelZ = TOWER_Z + TOWER_H;
+  const hasParts = blocks.length > 2;
 
-      {/* the model: the weights. Same box size as the engine, stacked on it. */}
-      <g className={dimMod ? "dimmed" : undefined}>
-        <Box x={PX0} y={PY0} z={zM} w={PW} d={PD} h={TOWER_H}
-          color="#2f7d96" top={0.13} left={0.09} right={0.05} cellOpacity={0.34}
-          cells={wCells} stroke="#26505e" className="tier-model"
-          tip={`${shortModel(modelName)} — the model weights. Click to open its architecture.`}
-          onClick={() => onSelect({ kind: "model" })}
-          selected={sel?.kind === "model"} />
-        <text x={labelAt(zM + TOWER_H / 2)[0]}
-          y={labelAt(zM + TOWER_H / 2)[1] - 2} textAnchor="start"
-          className="tier-name model">{shortModel(modelName)}</text>
-        <text x={labelAt(zM + TOWER_H / 2)[0]}
-          y={labelAt(zM + TOWER_H / 2)[1] + 13} textAnchor="start"
-          className="tier-role model">
-          {params > 0 ? `${fmtParams(params)} parameters` : "weights"}
-        </text>
-        <text x={labelAt(zM + TOWER_H / 2)[0]}
-          y={labelAt(zM + TOWER_H / 2)[1] + 27} textAnchor="start"
-          className="tier-hint">click to open ↓</text>
-      </g>
+  return (
+    <g className={`stack phase-${anim.phase}`} data-phase={anim.phase}>
+      {blocks.map((b) => {
+        const isEngine = b.ghost;
+        const z = isEngine ? engineZ : modelZ;
+        const bx = PX0 + b.offset * PW;
+        const bw = Math.max(10, b.frac * PW - (hasParts ? 4 : 0));
+        const insideModel = sel?.kind === "model" || sel?.kind === "node" || sel?.kind === "unit";
+        const dim = sel != null && !insideModel && sel.kind !== (isEngine ? "engine" : "model");
+        const active = isEngine ? sel?.kind === "engine" : sel?.kind === "model";
+
+        return (
+          <g key={b.key}
+            className={`${anim.cls(b.order)} ${dim ? "dimmed" : ""}`}
+            style={{ animationDelay: `${anim.delay(b.order)}ms` }}
+            data-block={b.key}>
+            <Box x={bx} y={PY0} z={z} w={bw} d={PD} h={TOWER_H}
+              color={isEngine ? "#4f8f6a" : "#2f7d96"}
+              ghost={isEngine}
+              top={isEngine ? 0.10 : 0.13}
+              left={isEngine ? 0.07 : 0.09}
+              right={isEngine ? 0.04 : 0.05}
+              cellOpacity={isEngine ? 0.30 : 0.34}
+              cells={blockArt(isEngine, bw)}
+              stroke={isEngine ? undefined : "#26505e"}
+              className={isEngine ? "tier-engine" : "tier-model"}
+              tip={isEngine
+                ? `${b.engine_label} — the engine`
+                : `${b.label} — part of ${b.model_label}`}
+              onClick={() => onSelect(isEngine ? { kind: "engine" } : { kind: "model" })}
+              selected={!!active} />
+          </g>
+        );
+      })}
+
+      {/* captions settle after the blocks, so the stack reads before the text */}
+      {blocks.map((b) => {
+        const isEngine = b.ghost;
+        const z = (isEngine ? engineZ : modelZ) + TOWER_H / 2;
+        const at = labelAt(z);
+        return (
+          <g key={`${b.key}-cap`}
+            className={`stack-cap ${anim.cls(b.order)}`}
+            style={{ animationDelay: `${anim.delay(b.order) + 90}ms` }}>
+            <text x={at[0]} y={at[1] - 2} textAnchor="start"
+              className={"tier-name" + (isEngine ? "" : " model")}>{b.label}</text>
+            {b.sub ? (
+              <text x={at[0]} y={at[1] + 13} textAnchor="start"
+                className={"tier-role" + (isEngine ? "" : " model")}>{b.sub}</text>
+            ) : null}
+          </g>
+        );
+      })}
     </g>
   );
 }
 
-/* ------------------------------------------------------------------ */
+/** Weight-matrix artwork; denser on a wide block, since it holds more. */
+function blockArt(ghost: boolean, w: number) {
+  const cols = Math.max(3, Math.min(8, Math.round(w / 30)));
+  const rows = ghost ? 3 : 4;
+  return Array.from({ length: cols * rows }, (_, i) => ({
+    u: 0.08 + (i % cols) * (0.84 / cols),
+    v: 0.11 + Math.floor(i / cols) * (0.78 / rows),
+    w: (0.84 / cols) * 0.84,
+    h: (0.78 / rows) * 0.84,
+  }));
+}
 
 /* ------------------------------------------------------------------ */
 /* the scene                                                           */
@@ -241,7 +262,8 @@ function Tower({ engine, running, modelName, params, sel, onSelect }:
 
 export interface HostSceneProps {
   hardware: Node[];
-  engine: EngineState;
+  /** the loaded (engine, model) pair, or null when the plate is bare */
+  unit: Unit | null;
   arch: ArchGraph | null;
   sel: Sel;
   onSelect: (s: NonNullable<Sel>) => void;
@@ -250,7 +272,7 @@ export interface HostSceneProps {
 }
 
 export function HostScene(props: HostSceneProps) {
-  const { hardware, engine, arch, sel, onSelect, hostTitle = "HOST" } = props;
+  const { hardware, unit, arch, sel, onSelect, hostTitle = "HOST" } = props;
 
   const cells: { key: string; x: number; y: number; anchor: Anchor }[] = [
     { key: "cpu", x: 0, y: 0, anchor: "above" },
@@ -259,8 +281,11 @@ export function HostScene(props: HostSceneProps) {
     { key: "vram", x: S, y: S, anchor: "below" },
   ];
 
+  // The resident unit, with the language model's analytic parameter count folded
+  // in when we know it — that is what sizes its block and its caption.
   const params = totalParams(arch);
-  const modelName = engine.running ? (engine.model || "model") : (arch?.model_id ?? "model");
+  const blocks = layoutUnit(unit && unit.engine === "llm"
+    ? { ...unit, params: unit.params || params } : unit);
 
   // Reserve the space the tower occupies both at rest and lifted, so hovering
   // never resizes the diagram.
@@ -313,7 +338,9 @@ export function HostScene(props: HostSceneProps) {
 
   return (
     <svg className="tree-svg scene-svg" viewBox={b.viewBox(16)} role="img"
-      aria-label="Host hardware with the inference engine and the model weights above it"
+      aria-label={unit
+        ? `Host hardware with ${unit.engine_label} running ${unit.model_label}`
+        : "Host hardware, with no engine loaded"}
       onClick={(e) => { if (e.target === e.currentTarget) props.onBackground(); }}>
       <Ground x0={PX0} y0={PY0} x1={PX1} y1={PY1} />
 
@@ -331,10 +358,24 @@ export function HostScene(props: HostSceneProps) {
         {hostTitle}
       </text>
 
+      {/* Nothing resident. The space above the plate is reserved either way,
+          so without a word here the diagram just looks broken. */}
+      {!unit ? (
+        <g className="stack-empty">
+          <text x={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[0]}
+            y={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[1] + 4}
+            textAnchor="middle" className="stack-empty-t">nothing loaded</text>
+          <text x={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[0]}
+            y={iso((PX0 + PX1) / 2, (PY0 + PY1) / 2, TOWER_Z)[1] + 20}
+            textAnchor="middle" className="stack-empty-s">
+            the GPU is free — pick an engine and a model below
+          </text>
+        </g>
+      ) : null}
+
       <g className={lift ? "upper lifted" : "upper"}
         onMouseEnter={enter} onMouseLeave={leave}>
-        <Tower engine={engine} running={engine.running} modelName={modelName}
-          params={params} sel={sel} onSelect={onSelect} />
+        <Stack blocks={blocks} unit={unit} sel={sel} onSelect={onSelect} />
 
       </g>
 

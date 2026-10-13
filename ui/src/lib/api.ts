@@ -244,3 +244,18 @@ export interface AsrResult {
   seconds: number; engine: string; model: string;
   audio_s: number | null; provenance: string;
 }
+
+/* ---- the unit catalogue: engine + model pairs ---- */
+
+export interface UnitPart { key: string; label: string; weight: number }
+
+export interface UnitInfo {
+  key: string; engine: string; engine_label: string; model_label: string;
+  model_path: string; port: number; binary: string;
+  size_bytes: number; params: number; parts: UnitPart[];
+  note: string; problem: string; configured: boolean; managed: boolean;
+}
+
+export interface UnitCatalogue { units: UnitInfo[]; resident: string | null }
+
+export const units = () => j<UnitCatalogue>("/api/units");

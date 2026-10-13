@@ -670,3 +670,84 @@ button.btn.primary:disabled { opacity: 0.45; }
 @media (prefers-reduced-motion: reduce) { .rec-dot { animation: none; } }
 .sp-hint { font-size: 12px; margin: 6px 0 0; }
 .sp-hint.warn { color: #a8621f; }
+
+/* ---- dynamic unit stack: load / evict choreography ----
+   A block rises out of the plate to load and sinks back into it to evict.
+   Transform-origin is the bottom edge so it grows *upward* from the tier
+   below, which is what makes the motion read as assembly rather than a fade.
+   Stagger is per-block via animation-delay, assigned in unitModel.ts. */
+.stack .blk-load, .stack .blk-settled, .stack .blk-evict,
+.stack-cap.blk-load, .stack-cap.blk-settled, .stack-cap.blk-evict {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+.stack .blk-load {
+  animation: blkIn 520ms cubic-bezier(.16, 1, .3, 1) backwards;
+}
+.stack-cap.blk-load {
+  animation: capIn 380ms ease-out backwards;
+}
+.stack .blk-settled, .stack-cap.blk-settled { animation: none; }
+.stack .blk-evict {
+  animation: blkOut 380ms cubic-bezier(.5, 0, .75, 0) forwards;
+}
+.stack-cap.blk-evict {
+  animation: capOut 240ms ease-in forwards;
+}
+
+@keyframes blkIn {
+  from { opacity: 0; transform: translateY(46px) scaleY(.55) scaleX(.9); }
+  60%  { opacity: 1; }
+  to   { opacity: 1; transform: translateY(0) scaleY(1) scaleX(1); }
+}
+@keyframes blkOut {
+  from { opacity: 1; transform: translateY(0) scaleY(1) scaleX(1); }
+  to   { opacity: 0; transform: translateY(40px) scaleY(.5) scaleX(.9); }
+}
+@keyframes capIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes capOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stack .blk-load, .stack .blk-evict,
+  .stack-cap.blk-load, .stack-cap.blk-evict { animation-duration: 1ms; animation-delay: 0ms; }
+}
+
+/* ---- unit picker ---- */
+.pick-wrap { margin: 16px 0 0; }
+.picker {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 10px; margin-top: 8px;
+}
+.picker-grp { border: 1px solid var(--line); background: #fff; padding: 9px 11px; }
+.picker-grp-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 7px; }
+.picker-grp-h b { font-size: 12.5px; }
+.picker-grp-h .faint { font-size: 10.5px; }
+.picker-models { display: flex; flex-direction: column; gap: 4px; }
+.model-chip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  border: 1px solid var(--line); background: #fbfdf9; padding: 5px 9px;
+  cursor: pointer; text-align: left; width: 100%;
+}
+.model-chip:hover:not(:disabled) { background: #eef5e9; border-color: var(--accent); }
+.model-chip.on { border-color: var(--accent); background: #e6f2e2; }
+.model-chip.off { opacity: .5; cursor: not-allowed; }
+.model-chip b { font-size: 12px; font-family: var(--mono); }
+.model-chip .faint { font-size: 10.5px; }
+.model-chip .tag {
+  font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+  border: 1px solid var(--line2); padding: 0 4px;
+}
+
+
+.stack-empty-t {
+  font-size: 13px; font-weight: 700; fill: var(--faint);
+  font-family: var(--mono); letter-spacing: .04em;
+}
+.stack-empty-s { font-size: 10.5px; fill: var(--faint); font-family: var(--mono); }
+.resident-name { font-size: 13px; }

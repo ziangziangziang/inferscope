@@ -402,6 +402,51 @@ surface the browser's raw message, which on this box was literally
 permission, no device, device busy, and unsupported browser, and names the error
 code only when it is genuinely unrecognised.
 
+## Units: the blocks are data, not hardcoded
+
+The scene drew a llama.cpp slab with a Qwen model on top. That worked until
+there was a second engine: nothing could be swapped, nothing was loaded by
+default, and a "load" had no starting state to animate from.
+
+### The unit
+
+A **unit** is one engine paired with one checkpoint — `whisper.cpp` +
+`ggml-base.en`, `llama.cpp` + `Qwen3.8-27B`. `inferscope/units.py` discovers
+them from disk rather than configuring one model per engine, so adding a
+checkpoint is a file drop. An engine with nothing installed still appears,
+marked unavailable with the reason.
+
+The scene now takes a unit and draws from it. Geometry is unchanged from the two
+fixed slabs: the engine is a plate-sized outline (software has no size of its
+own), the model sits on it with the same footprint, subdivided into one block
+per component when the model has parts, each block's width being its real share
+of the weights. So a single-file model is one block, and a diffusion model will
+be several side by side whose relative widths are the honest ones.
+
+### The choreography
+
+Blocks rise out of the plate to load and sink back into it to evict, staggered
+by tier. Captions settle last, so the stack reads before the text does.
+
+A swap does **not** cross-fade two towers. It sinks the old one into the plate
+and only then raises the new one, because two towers briefly sharing the GPU is
+a state this machine can never actually be in. The scene follows the user's
+*choice*, not the boot completing — tying it to `resident` left the plate bare
+for the full ~20s a whisper.cpp load takes, with nothing to animate.
+
+Nothing loaded is drawn as an explicit empty state with a sentence, since the
+space above the plate is reserved either way and a bare plate otherwise reads
+as broken.
+
+### Two owners of residency
+
+The one-engine rule is enforced by `enginectl`, but the language-model server
+is owned by `chat.py`, which also owns the profiler's identity check and kernel
+wrapping. Unifying those managers is a bigger change than the catalogue needs,
+so the scene reads **both** and, when both are resident, says so rather than
+quietly claiming a single occupant. That bug was real: before it, the plate
+showed nothing at all while llama.cpp was running.
+
 ## Information architecture (restructured)
 
 The UI had **seven equal tabs** that hid the fact that only one of them
