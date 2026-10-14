@@ -70,11 +70,17 @@ export function mlp(cfg) {
   return { params, ff, gated, act: act || "gelu", bias };
 }
 
-/** Normalisation, and whether the config even mentions one. */
+/** Normalisation, and whether the config even mentions one.
+ *
+ *  RMSNorm carries a scale; LayerNorm carries a scale *and* a shift. Reading
+ *  both as one number understated every LayerNorm model by half its norms —
+ *  small next to the matrices beside them, and exactly the kind of quiet
+ *  wrongness this file exists to prevent. */
 export function norm(cfg, width) {
   const rms = pick(cfg, "rms_norm_eps") != null;
   const ln = pick(cfg, "layer_norm_eps", "layer_norm_epsilon") != null;
-  return { params: rms || ln ? width : 0, kind: rms ? "RMSNorm" : ln ? "LayerNorm" : null };
+  const params = rms ? width : ln ? 2 * width : 0;
+  return { params, kind: rms ? "RMSNorm" : ln ? "LayerNorm" : null };
 }
 
 /**
@@ -129,9 +135,12 @@ export function vision(cfg) {
   const patch = int(pick(v, "patch_size", "patch_dim"), 16);
   const image = int(pick(v, "image_size"));
   const attn = attention(v), ml = mlp(v);
-  const per = attn.params + ml.params + 2 * h;
+  // a ViT block's norms are LayerNorms unless the config says otherwise,
+  // and a LayerNorm holds a scale and a shift -- see norm()
+  const nnW = pick(v, "rms_norm_eps") != null ? h : 2 * h;
+  const per = attn.params + ml.params + 2 * nnW;
   return {
-    hidden: h, layers, patch, image,
+    hidden: h, layers, patch, image, nnW,
     block: per, blocks: per * layers,
     merge: h * h,
     attn, mlp: ml,
@@ -139,25 +148,43 @@ export function vision(cfg) {
   };
 }
 
-/** What family is this, decided by what the config contains. */
+/** What family is this, decided by what the config contains.
+ *
+ *  The order of these checks is load-bearing. A CLIP config carries a
+ *  vision_config, so it trips the vision-language test unless contrastive is
+ *  checked first; a DiT config carries neither hidden_size nor
+ *  block_out_channels, so it must be caught before anything that assumes a
+ *  U-Net or a transformer stack. */
 export function family(cfg) {
+  const arch = ((pick(cfg, "architectures") || [])[0]) || "";
+  const cls = String(pick(cfg, "_class_name") || "");
+  const t = String(pick(cfg, "model_type") || "");
+
+  // contrastive: two encoders compared in one space. Not a language model
+  // with a picture input, which is how it used to be drawn.
+  if (t === "clip" || /CLIPModel/.test(arch)) return "contrastive";
   if (vision(cfg)) return "vision-language";
   if (pick(cfg, "audio_config", "speech_config")) return "omni";
   // diffusers writes its class into _class_name, not architectures, so a bare
   // unet/config.json or vae/config.json has neither of the two keys this used
   // to look at and fell through to the language builder
-  const arch = ((pick(cfg, "architectures") || [])[0]) || "";
-  const cls = String(pick(cfg, "_class_name") || "");
-  const t = String(pick(cfg, "model_type") || "");
-  // _class_name is the only reliable tell: a VAE has up_block_types too, so
-  // keying on its presence sent every AutoencoderKL down the UNet path
-  if (/Autoencoder/i.test(cls)) return "vae";
-  if (pick(cfg, "block_out_channels")) return "diffusion";
+  // a transformer over patches: DiT, PixArt. No down/up block lists, no
+  // block_out_channels -- those belong to the U-Net around it.
+  if (/Transformer2DModel/.test(cls) && pick(cfg, "patch_size") != null) return "dit";
   if ([arch, cls].some((a) => /UNet2DConditionModel|DiTTransformer2DModel/.test(a)) ||
       (t === "unet" && pick(cfg, "in_channels"))) return "diffusion";
+  if (pick(cfg, "block_out_channels")) return "diffusion";
   if (pick(cfg, "encoder_layers") && pick(cfg, "decoder_layers")) return "speech";
   if (arch.includes("Whisper") || t === "whisper") return "speech";
-  if (/AutoencoderKL|AutoencoderDC/.test(cls)) return "vae";
+  // /Autoencoder is the only reliable VAE tell: a VAE has up_block_types too,
+  // so keying on their presence sent every AutoencoderKL down the UNet path
+  if (/Autoencoder/i.test(cls)) return "vae";
+  // an encoder on its own: a base model with no head to read out. The Hub's
+  // naming convention is the signal -- task heads are ForSomething, base
+  // encoders are plain Model, or a *_text_model model_type.
+  if (/^(CLIPTextModel|CLIPTextModelWithProjection|BertModel|RobertaModel|XLMRobertaModel|DistilBertModel|T5EncoderModel|AlbartModel|SiglipTextModel|SiglipModel)$/.test(arch)
+    || /_text_model$/.test(t)) return "encoder";
+  if (/^CLIPVisionModel$/.test(arch) || t === "clip_vision_model") return "encoder";
   return "language";
 }
 

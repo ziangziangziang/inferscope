@@ -20,6 +20,7 @@
 import { COMMON, attention, heads, mlp, norm, pick } from "./blocks.js";
 
 const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : d);
+const lin = (din, dout, bias) => din * dout + (bias ? dout : 0);
 
 /**
  * What a U-Net block holds, from the channels the config declares.
@@ -88,12 +89,15 @@ export function buildSpeech(cfg) {
   const encCfg = {
     hidden_size: d, num_attention_heads: headsEnc, encoder_ffn_dim: ffn,
     ffn_dim: ffn, intermediate_size: ffn, hidden_act: "gelu",
-    rms_norm_eps: 1e-5, qkv_proj_bias: true,
+    // Whisper's blocks are LayerNorms: a scale and a shift each. This used to
+    // be declared as rms_norm_eps to reuse the formula, which counted half of
+    // every norm the model has.
+    layer_norm_eps: 1e-5,
   };
   const decCfg = {
     hidden_size: d, num_attention_heads: headsDec, decoder_ffn_dim: ffn,
     ffn_dim: ffn, intermediate_size: ffn, hidden_act: "gelu",
-    rms_norm_eps: 1e-5, qkv_proj_bias: true,
+    layer_norm_eps: 1e-5,
   };
   const encT = blockTemplate(encCfg);
   const decT = blockTemplate(decCfg);
@@ -268,3 +272,337 @@ export function buildVAE(cfg) {
 }
 
 export { blockTemplate, per, heads };
+/* ------------------------------------------------------------------ *
+ * Encoders on their own: CLIP's text tower, BERT, the T5 encoder.
+ *
+ * What these do not have matters as much as what they do: no output head over
+ * the vocabulary, nothing to sample. The old language builder drew them with
+ * a Logits stage and a Sampling stage anyway, which is how a drawing tells
+ * you it has exactly one shape for every config.
+ * ------------------------------------------------------------------ */
+
+/** One encoder stack: [norm, self-attn, norm, mlp], from the config. */
+function encoderStack(cfg, pfx, branch, { label = "Encoder block", note = "" } = {}) {
+  const d = n(pick(cfg, "hidden_size"));
+  const L = n(pick(cfg, "num_hidden_layers"));
+  const t = blockTemplate(cfg);
+  const nn = norm(cfg, d);
+  return {
+    width: d, layers: L, heads: n(pick(cfg, "num_attention_heads")),
+    stackParams: per(t) * L, finalNorm: nn.params || d, template: t,
+    node: {
+      id: `${pfx}stack`, label, kind: "stack", params: per(t) * L,
+      branch, repeat: L, template: t,
+      dims: { layers: L, width: d, heads: n(pick(cfg, "num_attention_heads")) },
+      note,
+    },
+    finalNode: {
+      id: `${pfx}norm`, label: `Final ${nn.kind || "norm"}`, kind: "norm",
+      params: nn.params || d, branch,
+    },
+  };
+}
+
+/** The text half of an encoder, as nodes and edges. */
+function textEncoder(cfg, pfx, branch, { projDim = 0 } = {}) {
+  const d = n(pick(cfg, "hidden_size"));
+  const vocab = n(pick(cfg, "vocab_size"));
+  const posLen = n(pick(cfg, "max_position_embeddings"));
+  const pos = posLen * d;
+  const stack = encoderStack(cfg, pfx, branch,
+    { note: "every block identical; nothing reads one token ahead of another" });
+  let params = vocab * d + pos + stack.stackParams + stack.finalNorm;
+
+  const nodes = [
+    { id: `${pfx}tokens`, label: "Tokens", kind: "tensor", params: 0, branch,
+      plate: { count: 8, unit: "token", title: "Tokens", shape: ["B", "T"], width: d,
+        note: "one bar per token" } },
+    { id: `${pfx}embed`, label: "Token embed", kind: "embed", params: vocab * d, branch,
+      dims: { vocab: vocab || "?", width: d }, note: COMMON.tokenEmbedding },
+  ];
+  const edges = [
+    { from: `${pfx}tokens`, to: `${pfx}embed`, shape: ["B", "T"] },
+  ];
+  if (pos) {
+    nodes.push({ id: `${pfx}pos`, label: "Position embed", kind: "embed", params: pos,
+      branch, dims: { length: posLen, width: d },
+      note: "learned positions, one row per slot" });
+    edges.push({ from: `${pfx}embed`, to: `${pfx}pos`, shape: ["B", "T"] });
+    edges.push({ from: `${pfx}pos`, to: `${pfx}stack`, shape: ["B", "T"] });
+  } else {
+    edges.push({ from: `${pfx}embed`, to: `${pfx}stack`, shape: ["B", "T"] });
+  }
+  nodes.push(stack.node, stack.finalNode);
+  edges.push({ from: `${pfx}stack`, to: `${pfx}norm`, shape: ["B", "T"] });
+  if (projDim) {
+    nodes.push({ id: `${pfx}proj`, label: "Projection", kind: "projector",
+      params: d * projDim + projDim, branch, dims: { from: d, to: projDim },
+      note: "into the space both towers share" });
+    edges.push({ from: `${pfx}norm`, to: `${pfx}proj`, shape: [projDim] });
+    return { nodes, edges, stack, params: params + d * projDim + projDim };
+  }
+  return { nodes, edges, stack, params };
+}
+
+/** The vision half: patches in, one vector per patch out. */
+function visionEncoder(cfg, pfx, branch, { projDim = 0 } = {}) {
+  const d = n(pick(cfg, "hidden_size"));
+  const patch = n(pick(cfg, "patch_size"), 16);
+  const image = n(pick(cfg, "image_size"), 0);
+  const layers = n(pick(cfg, "num_hidden_layers", "num_layers", "depth"));
+  const stack = encoderStack(cfg, pfx, branch, { label: "Vision block",
+    note: "the same shape in every block" });
+
+  // the patch projection is a conv whose kernel is the patch itself, so its
+  // input width is in-channels x patch^2. The config names the patch but
+  // usually not the channels: three (RGB) is assumed, and the card says so.
+  const inCh = n(pick(cfg, "in_channels"), 3);
+  const assumedCh = pick(cfg, "in_channels") == null;
+  const patchIn = inCh * patch * patch;
+  const patchEmbed = patchIn * d;
+  const squares = image ? (image / patch) * (image / patch) : null;
+  // a class token is prepended -- structural to every ViT, not in the config
+  const pos = squares != null ? (squares + 1) * d : 0;
+
+  const nodes = [
+    { id: `${pfx}img`, label: "Image", kind: "tensor", params: 0, branch,
+      plate: { count: 8, unit: "patch", title: "Image",
+        shape: ["B", 3, "T", "H", "W"], width: d,
+        note: `one bar per ${patch}px patch` } },
+    { id: `${pfx}patch`, label: "Patch embed", kind: "embed", params: patchEmbed,
+      branch, dims: { width: d, patch },
+      note: `in-channels x patch^2 -> width${assumedCh ? " (three colour channels assumed; the config does not declare them)" : ""}` },
+  ];
+  const edges = [
+    { from: `${pfx}img`, to: `${pfx}patch`, shape: ["H", "W", patch] },
+    { from: `${pfx}patch`, to: `${pfx}stack`, shape: ["S"] },
+  ];
+  if (pos) {
+    nodes.push({ id: `${pfx}pos`, label: "Position embed", kind: "embed", params: pos,
+      branch, dims: { patches: squares + 1, width: d },
+      note: "one row per patch, plus the class token" });
+    edges.splice(1, 1,
+      { from: `${pfx}patch`, to: `${pfx}pos`, shape: ["S"] },
+      { from: `${pfx}pos`, to: `${pfx}stack`, shape: ["S"] });
+  }
+  nodes.push(stack.node, stack.finalNode);
+  edges.push({ from: `${pfx}stack`, to: `${pfx}norm`, shape: ["S"] });
+  const params = patchEmbed + pos + stack.stackParams + stack.finalNorm;
+
+  if (projDim) {
+    nodes.push({ id: `${pfx}proj`, label: "Projection", kind: "projector",
+      params: d * projDim + projDim, branch, dims: { from: d, to: projDim },
+      note: "into the space both towers share" });
+    edges.push({ from: `${pfx}norm`, to: `${pfx}proj`, shape: [projDim] });
+    return { nodes, edges, params: params + d * projDim + projDim, stack };
+  }
+  edges.push({ from: `${pfx}norm`, to: `${pfx}out`, shape: [d] });
+  nodes.push({ id: `${pfx}out`, label: "Emitted vector", kind: "tensor",
+    params: 0, branch, dims: { width: d },
+    note: "one vector per patch; the picture is pooled from it" });
+  return { nodes, edges, params, stack };
+}
+
+/** A standalone encoder: config -> graph, with no head and no sampling. */
+export function buildEncoder(cfg) {
+  if (pick(cfg, "image_size") && pick(cfg, "patch_size") && !pick(cfg, "vocab_size")) {
+    const lane = visionEncoder(cfg, "", "image-enc",
+      { projDim: n(pick(cfg, "projection_dim")) || 0 });
+    return {
+      nodes: lane.nodes, edges: lane.edges, family: "encoder", params: lane.params,
+      meta: { layers: lane.stack.layers, hidden: lane.stack.width,
+        heads: lane.stack.heads, kv_heads: lane.stack.heads, ffn: 0,
+        per_block: lane.stack.stackParams / Math.max(1, lane.stack.layers),
+        position: "learned", moe: null, vision: null, tied: false, vocab: null },
+    };
+  }
+  const lane = textEncoder(cfg, "", "enc",
+    { projDim: /WithProjection/.test(String(pick(cfg, "architectures", [])[0] || ""))
+      ? n(pick(cfg, "projection_dim")) || 0 : 0 });
+  const nodes = [...lane.nodes, {
+    id: "out", label: "Emitted vector", kind: "tensor", params: 0, branch: "enc",
+    dims: { width: lane.stack.width },
+    note: "one vector per token; the sentence is pooled from it. No output head, nothing to sample.",
+  }];
+  const edges = [...lane.edges,
+    lane.nodes.some((x) => x.id === "proj")
+      ? { from: "proj", to: "out", shape: [lane.stack.width] }
+      : { from: "norm", to: "out" }];
+  return {
+    nodes, edges, family: "encoder", params: lane.params,
+    meta: {
+      layers: lane.stack.layers, hidden: lane.stack.width, heads: lane.stack.heads,
+      kv_heads: lane.stack.heads,
+      ffn: n(pick(cfg, "intermediate_size")), per_block: lane.stack.stackParams / lane.stack.layers,
+      position: n(pick(cfg, "max_position_embeddings")) ? "learned" : "none declared",
+      moe: null, vision: null, tied: false, vocab: n(pick(cfg, "vocab_size")) || null,
+    },
+  };
+}
+
+/**
+ * Contrastive: two encoders compared in one space.
+ *
+ * A CLIP config was drawn as a language model with a picture bolted on -- an
+ * output head, logits, sampling, none of which it has. What it has is two
+ * towers of the same shape, each ending in a projection into a shared width,
+ * and one learned number that scales the comparison between them.
+ */
+export function buildContrastive(cfg) {
+  const proj = n(pick(cfg, "projection_dim"));
+  const tLane = textEncoder(pick(cfg, "text_config") || cfg, "t", "text-enc",
+    { projDim: proj || 0 });
+  const vLane = visionEncoder(pick(cfg, "vision_config") || {}, "v", "image-enc",
+    { projDim: proj || 0 });
+  const logit = pick(cfg, "logit_scale_init_value") != null ? 1 : 0;
+
+  const nodes = [...vLane.nodes, ...tLane.nodes, {
+    // its own lane: both towers drop into it, and neither tower's column has
+    // to share a band with the other's cards
+    id: "joint", label: "Shared space", kind: "tensor", params: logit, branch: "out",
+    dims: { width: proj || "?" },
+    note: "both towers project here and are compared pairwise; the scale between "
+      + "them is one learned number, initialised at "
+      + `${pick(cfg, "logit_scale_init_value")} -- the 1 parameter counted above`,
+  }];
+  const edges = [...vLane.edges, ...tLane.edges,
+    { from: "tproj", to: "joint", shape: [proj] },
+    { from: "vproj", to: "joint", shape: [proj] },
+  ];
+  return {
+    nodes, edges, family: "contrastive",
+    params: tLane.params + vLane.params + logit,
+    meta: {
+      layers: tLane.stack.layers, hidden: tLane.stack.width, heads: tLane.stack.heads,
+      kv_heads: tLane.stack.heads, ffn: n(pick(cfg, "text_config", "intermediate_size")),
+      per_block: tLane.stack.stackParams / tLane.stack.layers,
+      position: "learned", moe: null,
+      vision: { layers: vLane.stack.layers, hidden: vLane.stack.width },
+      tied: false, vocab: n(pick(cfg, "text_config", "vocab_size")) || null,
+      text_layers: tLane.stack.layers, text_hidden: tLane.stack.width,
+      vision_layers: vLane.stack.layers, vision_hidden: vLane.stack.width,
+      projection: proj || null,
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * A transformer over patches: DiT, PixArt.
+ *
+ * This config used to fall through to the language builder, which threw
+ * "config declares no hidden size or layer count" -- true, and useless: the
+ * width is declared as num_attention_heads x attention_head_dim, and the
+ * layers as num_layers.
+ *
+ * One deliberate gap, on the card of every block: the feed-forward width is
+ * not declared anywhere in these configs, so it is not counted. The total
+ * reads about 55% of the published figure, and the card says why.
+ * ------------------------------------------------------------------ */
+export function buildDiT(cfg) {
+  const heads_ = n(pick(cfg, "num_attention_heads"));
+  const hd = n(pick(cfg, "attention_head_dim"));
+  const d = n(pick(cfg, "hidden_size"), heads_ * hd);
+  const layers = n(pick(cfg, "num_layers"));
+  const patch = n(pick(cfg, "patch_size"), 1);
+  const inCh = n(pick(cfg, "in_channels"), 4);
+  const outCh = n(pick(cfg, "out_channels"), inCh);
+  const sample = n(pick(cfg, "sample_size"), 64);
+  const cross = n(pick(cfg, "cross_attention_dim"), 0);
+  const ada = String(pick(cfg, "norm_type") || "");
+  const classes = n(pick(cfg, "num_embeds_ada_norm"), 0);
+  const captionCh = n(pick(cfg, "caption_channels"), 0);
+  const bias = !!pick(cfg, "attention_bias");
+  if (!d || !layers) {
+    throw new Error("no width or layer count here — not a patch transformer the viewer knows");
+  }
+
+  // self-attention over patch tokens: q, k, v from the width, o back to it
+  const sa = 3 * lin(d, heads_ * hd, bias) + lin(heads_ * hd, d, bias);
+  // cross-attention, when the config declares a conditioning width: queries
+  // from the image, keys and values from the text embedding
+  const ca = cross ? lin(d, heads_ * hd, bias) + 2 * lin(cross, heads_ * hd, bias)
+    + lin(heads_ * hd, d, bias) : 0;
+  // adaLN. The config names the norm type; the six modulations (shift, scale
+  // and gate for the attention and for the feed-forward) are what that name
+  // means. ada_norm_zero produces them with one linear; ada_norm_single keeps
+  // them as a plain table.
+  const adaP = ada === "ada_norm_zero" ? lin(d, 6 * d, true) : 6 * d;
+  const block = adaP + sa + ca;
+
+  const template = [
+    { id: "ada", label: "adaLN", kind: "norm", params: adaP,
+      note: "timestep and class condition every block through six modulations" },
+    { id: "sa", label: "Self-attn", kind: "attention", params: sa },
+    ...(ca ? [{ id: "ca", label: "Cross-attn", kind: "attention", params: ca,
+      note: "queries the image tokens, keys and values from the caption" }] : []),
+  ];
+
+  // the patch projection is a conv whose kernel is the patch, so its input
+  // width is in-channels x patch^2
+  const patchEmbed = inCh * patch * patch * d;
+  // ada_norm_single carries a learned position table (PixArt); ada_norm_zero
+  // uses a fixed sin-cos grid (DiT), which holds no parameters
+  const pos = ada === "ada_norm_single"
+    ? (sample / patch) * (sample / patch) * d : 0;
+  const labelEmbed = classes * d;
+  const captionProj = captionCh && cross ? lin(captionCh, cross, true) : 0;
+  // the output layer: a final norm, its own adaLN modulation, then a linear
+  // to patch^2 x out_channels -- the patch shape, un-patchified
+  const finalP = 2 * d + (ada === "ada_norm_zero" ? lin(d, 2 * d, true) : 2 * d)
+    + lin(d, patch * patch * outCh, true);
+
+  const nodes = [
+    { id: "latent", label: "Noisy latent", kind: "tensor", params: 0, branch: "dit",
+      plate: { count: 7, unit: "channel", title: "Noisy latent",
+        shape: ["B", inCh, sample, sample], width: inCh,
+        note: "one bar per latent channel" } },
+    { id: "patch", label: "Patch embed", kind: "embed", params: patchEmbed, branch: "dit",
+      dims: { width: d, patch },
+      note: `in-channels x ${patch}^2 -> width; the image enters as patches` },
+    ...(pos ? [{ id: "pos", label: "Position embed", kind: "embed", params: pos,
+      branch: "dit", dims: { patches: (sample / patch) ** 2, width: d },
+      note: "learned positions, one row per patch" }] : []),
+    ...(labelEmbed ? [{ id: "label", label: "Class embed", kind: "embed",
+      params: labelEmbed, branch: "dit", dims: { classes, width: d },
+      note: "one row per class; conditions every block through adaLN" }] : []),
+    ...(captionProj ? [{ id: "caption", label: "Caption proj", kind: "projector",
+      params: captionProj, branch: "dit", dims: { from: captionCh, to: cross },
+      note: "the text encoder's output, brought to the cross-attention's width" }] : []),
+    { id: "blocks", label: "DiT block", kind: "stack", params: block * layers,
+      branch: "dit", repeat: layers, template,
+      dims: { layers, width: d },
+      note: "the feed-forward inside each block has no width declared in this "
+        + "config, so it is not counted" },
+    { id: "out", label: "Output layer", kind: "projector", params: finalP, branch: "dit",
+      dims: { width: d, out: patch * patch * outCh },
+      note: "norm, adaLN modulation, and a linear back to patch x patch x channels" },
+    { id: "clean", label: "Denoised latent", kind: "tensor", params: 0, branch: "dit",
+      plate: { count: 7, unit: "channel", title: "Denoised latent",
+        shape: ["B", outCh, sample, sample], width: outCh,
+        note: "the noise the block predicts, same shape it started as" } },
+  ];
+  const chain = ["latent", "patch"];
+  if (pos) chain.push("pos");
+  if (labelEmbed) chain.push("label");
+  if (captionProj) chain.push("caption");
+  chain.push("blocks", "out", "clean");
+  const edges = [];
+  for (let i = 0; i < chain.length - 1; i++) {
+    const from = chain[i], to = chain[i + 1];
+    const shape = to === "blocks" ? [(sample / patch) ** 2, d]
+      : to === "clean" ? [sample, sample] : null;
+    edges.push(shape ? { from, to, shape } : { from, to });
+  }
+
+  const params = nodes.reduce((s, v) => s + (v.params || 0), 0);
+  return {
+    nodes, edges, family: "dit", params,
+    meta: {
+      layers, hidden: d, heads: heads_, kv_heads: heads_, ffn: 0, per_block: block,
+      position: pos ? "learned" : "fixed sin-cos (not declared; holds no parameters)",
+      moe: null, vision: null, tied: false, vocab: null,
+      patch, in_channels: inCh, out_channels: outCh, sample,
+      conditioning: cross || null, classes: classes || null,
+    },
+  };
+}

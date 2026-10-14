@@ -9,7 +9,8 @@
  */
 import { attention, family, heads, mlp, moe, norm, pick, position, vision, COMMON }
   from "./blocks.js";
-import { buildDiffusion, buildSpeech, buildVAE } from "./families.js";
+import { buildContrastive, buildDiT, buildEncoder, buildDiffusion, buildSpeech, buildVAE }
+  from "./families.js";
 
 const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : d);
 
@@ -22,6 +23,9 @@ export function build(cfg) {
   if (fam === "speech") return buildSpeech(cfg);
   if (fam === "vae") return buildVAE(cfg);
   if (fam === "diffusion") return buildDiffusion(cfg);
+  if (fam === "dit") return buildDiT(cfg);
+  if (fam === "encoder") return buildEncoder(cfg);
+  if (fam === "contrastive") return buildContrastive(cfg);
 
   const text = pick(cfg, "text_config") || cfg;      // VLMs nest the LM stack
   const { hidden, h, kv, hd } = heads(text);
@@ -132,9 +136,9 @@ export function build(cfg) {
         // parts x count came to 267,743,232 against a stated 267,805,440 -- a
         // 62,208 gap that no single-family test was looking at.
         template: [
-          { id: "vn1", label: "LayerNorm", kind: "norm", params: vis.hidden },
+          { id: "vn1", label: "LayerNorm", kind: "norm", params: vis.nnW },
           { id: "va", label: "Attention", kind: "attention", params: vis.attn.params },
-          { id: "vn2", label: "LayerNorm", kind: "norm", params: vis.hidden },
+          { id: "vn2", label: "LayerNorm", kind: "norm", params: vis.nnW },
           { id: "vm", label: "MLP", kind: "mlp", params: vis.mlp.params },
         ] },
       { id: "merger", label: "Merger", kind: "projector", params: vis.merge,

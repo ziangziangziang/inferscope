@@ -55,6 +55,46 @@ for (const f of readdirSync(cfgDir).filter((x) => x.endsWith(".json"))) {
     ok(m.vision !== null, "vision tower counted separately");
     ok(Math.abs(g.params / B - 8.2) < 0.5, "Qwen3-VL-8B within ~6% of ~8.2B");
   }
+  if (f.startsWith("clip-text")) {
+    ok(g.family === "contrastive", "CLIPModel recognised as contrastive, not a language model");
+    // published 427,616,846. The residual is attention and MLP biases the
+    // config never declares, so the count is entitled to read slightly low.
+    ok(Math.abs(g.params - 427616846) / 427616846 < 0.005,
+      "CLIP ViT-L/14 within 0.5% of the published 427.6M");
+    ok(g.nodes.some((x) => x.id === "joint"), "both towers meet in a shared space");
+    ok(!g.nodes.some((x) => x.label === "Sampling" || x.label === "Logits"),
+      "nothing to sample: no logits stage, no sampling stage");
+  }
+  if (f.startsWith("clip-bigg")) {
+    ok(g.family === "contrastive", "bigG recognised as contrastive");
+    ok(g.params > 2.4 * B && g.params < 2.7 * B,
+      "bigG in the 2.4-2.7B range its config describes (32 text + 48 vision layers)");
+    ok(m.vision_layers === 48 && m.text_layers === 32, "two towers, counted separately");
+  }
+  if (f.startsWith("sd-clip-text")) {
+    ok(g.family === "encoder", "CLIPTextModel recognised as an encoder, not a causal LM");
+    ok(Math.abs(g.params - 123e6) / 123e6 < 0.02,
+      "SD's text encoder within 2% of the published 123M");
+    ok(!g.nodes.some((x) => x.label === "Sampling" || x.label === "Logits"),
+      "an encoder has no logits and no sampling");
+  }
+  if (f.startsWith("dit-xl")) {
+    ok(g.family === "dit", "DiT recognised as a patch transformer");
+    ok(m.hidden === 1152 && m.heads === 16 && m.patch === 2,
+      "width derived from 16 heads x 72 head-dim, not invented");
+    ok(Math.abs(g.params - 375777824) < 1000, "regression lock on the derived total");
+    ok(g.nodes.some((x) => /feed-forward/.test(x.note || "")),
+      "the undeclared feed-forward is declared missing, not guessed");
+  }
+  if (f.startsWith("pixart")) {
+    ok(g.family === "dit", "PixArt recognised as a patch transformer");
+    ok(g.nodes.some((x) => x.id === "caption"),
+      "the caption projection is counted from caption_channels");
+    ok(g.nodes.some((x) => x.id === "pos"),
+      "ada_norm_single carries a learned position table");
+    ok(g.nodes.some((x) => /feed-forward/.test(x.note || "")),
+      "the undeclared feed-forward is declared missing, not guessed");
+  }
   // Every repeated component, whatever family it is in, must hold exactly
   // one copy's worth of its own sub-layers times the count. This used to be a
   // single check on the language stack, which meant a diffusion U-Net block
