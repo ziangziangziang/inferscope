@@ -39,7 +39,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 from .chat import port_in_use, reap_own_orphan
@@ -249,7 +249,8 @@ class EngineManager:
             time.sleep(0.25)
         return {"stopped": True, "engine": key, "pid": pid}
 
-    def load(self, key: str, log_dir: str, wait: float = 180.0) -> dict[str, Any]:
+    def load(self, key: str, log_dir: str, wait: float = 180.0,
+              model: str = "") -> dict[str, Any]:
         """Make *key* the resident engine, offloading whatever held the GPU."""
         self._reap_if_dead()
         spec = self._specs.get(key)

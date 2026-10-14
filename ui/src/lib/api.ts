@@ -122,10 +122,16 @@ export interface TurnResult {
 }
 
 export const engines = () => j<EngineStatus>("/api/engines");
-const post = <T,>(url: string) => j<T>(url, { method: "POST" });
+const post = <T,>(url: string, body?: unknown) =>
+  j<T>(url, { method: "POST",
+           ...(body ? { headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body) } : {}) });
 
-export const engineLoad = (key: string) =>
-  post<LoadResult>(`/api/engines/${encodeURIComponent(key)}/load`);
+/** `model` is the unit key, so an engine with several models starts the one
+ *  that was actually picked rather than the configured default. */
+export const engineLoad = (key: string, model?: string) =>
+  post<LoadResult>(`/api/engines/${encodeURIComponent(key)}/load`,
+                   model ? { model } : undefined);
 export const engineOffload = () => post<LoadResult>("/api/engines/offload");
 
 export interface TtsResult {

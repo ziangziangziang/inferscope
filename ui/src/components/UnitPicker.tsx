@@ -35,7 +35,7 @@ export function useSwapEngine() {
     // The language engine is not in the engine registry — chat.py owns that
     // process — so asking enginectl to load it just returns "unknown engine".
     const r: LoadResult = u.managed
-      ? await engineLoad(u.engine)
+      ? await engineLoad(u.engine, u.key)
       : { ok: true, error: null, evicted: null };
     if (!r.ok) {
       setSwap({ phase: "idle", key: null });

@@ -592,10 +592,32 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         return await asyncio.to_thread(state.engine_ctl.status)
 
     @app.post("/api/engines/{key}/load")
-    async def engine_load(key: str):
+    async def engine_load(key: str, req: Request):
+        """Start an engine, optionally on a particular model.
+
+        An engine that has more than one model on disk — two video pipelines,
+        say — would otherwise always start the configured one, so picking a
+        model in the rail would silently load a different one.
+        """
+        try:
+            body = await req.json()
+        except Exception:                            # noqa: BLE001
+            body = {}                                 # no body: use the default
+        want = str(body.get("model") or "").strip()
+        want_path = ""
         async with state.engine_lock:
+            if want:
+                found = discover(cfg, state.engine_ctl.specs())
+                match = next((u for u in found
+                              if u.engine == key and u.key == want), None)
+                if match is None:
+                    raise HTTPException(400, f"unknown model: {want}")
+                if not os.path.exists(match.model_path):
+                    raise HTTPException(400, f"model is gone: {match.model_path}")
+                want_path = match.model_path
             return await asyncio.to_thread(
-                state.engine_ctl.load, key, str(cfg.data_dir / "logs"))
+                state.engine_ctl.load, key, str(cfg.data_dir / "logs"),
+                model=want_path)
 
     @app.post("/api/engines/offload")
     async def engine_offload():

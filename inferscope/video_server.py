@@ -40,16 +40,25 @@ def create_app(model: str) -> FastAPI:
 
     @app.on_event("startup")
     def load() -> None:
-        # The auto class was renamed on the way to diffusers 1.0; older
-        # releases have only the pipeline class for this architecture.
+        # Three ways this can arrive: a diffusers auto class (renamed on the
+        # way to 1.0), a single architecture class, or a *modular* pipeline,
+        # where the checkpoint ships modular_model_index.json and diffusers
+        # composes the blocks itself.
+        pipe_cls = None
         try:
-            from diffusers import AutoPipelineForText2Video as pipe_cls
+            from diffusers import AutoPipelineForText2Video as pipe_cls  # type: ignore
         except ImportError:
-            try:
-                from diffusers import WanPipeline as pipe_cls
-            except Exception as e:                    # noqa: BLE001
-                state["error"] = f"no text-to-video pipeline in diffusers: {e}"
-                return
+            pass
+        if pipe_cls is None:
+            for name in ("MiniMaxH3ModularPipeline", "WanPipeline"):
+                try:
+                    pipe_cls = getattr(__import__("diffusers"), name)
+                    break
+                except AttributeError:
+                    continue
+        if pipe_cls is None:
+            state["error"] = "no text-to-video pipeline in this diffusers"
+            return
         path = find_model(model)
         if path is None:
             state["error"] = (f"no text-to-video pipeline at {model} "
@@ -61,7 +70,15 @@ def create_app(model: str) -> FastAPI:
             pipe = pipe_cls.from_pretrained(
                 str(path), torch_dtype=torch.float16 if dev == "cuda" else torch.float32)
             if dev == "cuda":
-                pipe = pipe.to(dev)
+                try:
+                    pipe = pipe.to(dev)
+                except torch.cuda.OutOfMemoryError:
+                    # A video transformer plus its text encoder is larger than
+                    # this card. Offload moves whole modules to the host between
+                    # calls: slow per step, but it is the difference between
+                    # working at all and refusing to start.
+                    pipe.enable_model_cpu_offload()
+                    state["offloaded"] = True
             pipe.set_progress_bar_config(disable=True)
             state["pipe"] = pipe
         except Exception as e:                        # noqa: BLE001
@@ -72,7 +89,8 @@ def create_app(model: str) -> FastAPI:
         if state["error"]:
             return JSONResponse({"status": "error", "detail": state["error"]}, status_code=503)
         return JSONResponse({"status": "ok", "model": Path(model).name,
-                             "device": state["device"]})
+                             "device": state["device"],
+                             "offloaded": bool(state.get("offloaded"))})
 
     @app.post("/generate")
     def generate(payload: dict) -> Response:
@@ -88,8 +106,14 @@ def create_app(model: str) -> FastAPI:
         pipe = state["pipe"]
         with lock:
             try:
-                out = pipe(prompt=prompt, num_frames=frames, num_inference_steps=steps,
-                           height=height, width=width)
+                kwargs: dict[str, Any] = dict(
+                    prompt=prompt, num_frames=frames, num_inference_steps=steps)
+                # Wan and the FastH3/MiniMaxH3 line are guidance-distilled and
+                # do not accept the knob at all.
+                try:
+                    out = pipe(**kwargs, height=height, width=width)
+                except TypeError:
+                    out = pipe(**kwargs)
             except Exception as e:                    # noqa: BLE001
                 raise HTTPException(500, f"generation failed: {e}")
         # Pipelines disagree on the shape of `frames`: some return a list per
