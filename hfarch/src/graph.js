@@ -57,7 +57,13 @@ export function build(cfg) {
 
   const embed = vocab ? vocab * hidden : 0;
   const nodes = [
-    { id: "ids", label: "Token ids", kind: "tensor", params: 0, branch: "text", note: "the integers the model reads" },
+    {
+      id: "ids", label: "Tokens", kind: "tensor", params: 0, branch: "text",
+      // drawn as a plate: one thin sheet per token, one of them pulled out as
+      // the vector actually being read this step
+      plate: { count: 8, unit: "token", shape: ["B", "T"], width: hidden, note: "each sheet is one token's vector" },
+      note: "the integers the model reads",
+    },
     {
       id: "embed", label: "Token embedding", kind: "embed", params: embed, branch: "text",
       dims: { vocab: vocab || "?", width: hidden },
@@ -99,8 +105,12 @@ export function build(cfg) {
   const vis = vision(cfg);
   if (vis) {
     nodes.push(
-      { id: "img", label: "Image", kind: "tensor", params: 0, branch: "vision",
-        note: vis.note },
+      {
+        id: "img", label: "Image", kind: "tensor", params: 0, branch: "vision",
+        plate: { count: 8, unit: "patch", shape: ["B", 3, "T", "H", "W"], width: vis.hidden,
+          note: `each sheet is one ${vis.patch}px patch` },
+        note: vis.note,
+      },
       { id: "patch", label: "Patch embedding", kind: "embed", params: vis.merge,
         branch: "vision", dims: { width: vis.hidden } },
       { id: "vblocks", label: `Vision block ×${vis.layers}`, kind: "stack",

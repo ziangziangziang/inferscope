@@ -62,6 +62,66 @@ function topPatch(x, y, w, d, z1, u, v, uw, vh) {
   return poly([at(u, v), at(u + uw, v), at(u + uw, v + vh), at(u, v + vh)]);
 }
 
+/**
+ * A plate: a run of thin sheets, one per element of the leading axis, with one
+ * sheet pulled forward as the vector being read right now.
+ *
+ * This is the difference between "Token ids" as a box and tokenised text as
+ * what it is. A box says there is a tensor here; a plate says there are B of
+ * them, they are stacked, and this one is the current step -- which is the only
+ * reason the rest of the diagram has a single highlighted path through it.
+ *
+ * The sheet count is representative, not the config's own batch size: "B" is
+ * symbolic, and drawing 32 sheets to stand for it would be a lie about scale.
+ * The axis label carries the real shape instead.
+ */
+function drawPlate(root, nd, it, hit) {
+  const { count, shape, width, unit } = nd.plate;
+  const { x, y, z } = it;
+  const w = 68, d = 48, t = 6;
+  const step = d / count;
+  const focus = Math.min(count - 1, 3);
+
+  for (let i = 0; i < count; i++) {
+    const on = i === focus;
+    // the focused sheet comes forward and left, so it is unmistakably the one
+    const sy = y + (on ? -step * 0.55 : i * step);
+    const sx = x + (on ? -9 : 0);
+    const c = on ? "#7cb98f" : "#b9c6b2";
+    const x1 = sx + w, y1 = sy + step * 0.82, z1 = z + t + (on ? 5 : 0);
+    const g = el("g", { class: on ? "node sheet-on" : "node" });
+    g.append(el("polygon", {
+      points: poly([iso(sx, y1, z), iso(sx, y1, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
+      fill: c, "fill-opacity": on ? 0.34 : 0.2, stroke: INK, "stroke-width": 0.7,
+    }));
+    g.append(el("polygon", {
+      points: poly([iso(x1, sy, z), iso(x1, sy, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
+      fill: c, "fill-opacity": on ? 0.24 : 0.14, stroke: INK, "stroke-width": 0.7,
+    }));
+    g.append(el("polygon", {
+      points: poly([iso(sx, sy, z1), iso(x1, sy, z1), iso(x1, y1, z1), iso(sx, y1, z1)]),
+      fill: on ? "#ffffff" : "#f4f8f1", "fill-opacity": on ? 0.92 : 0.7,
+      stroke: on ? "#2e8b4c" : INK, "stroke-width": on ? 1.5 : 0.7,
+    }));
+    const act = () => hit && hit(nd);
+    g.addEventListener("click", act);
+    g.append(el("title", {}, document.createTextNode(
+      `${nd.label} — one sheet per ${unit}`)));
+    root.append(g);
+  }
+
+  // the vector itself, and what it is
+  const [lx, ly] = iso(x - 9, y - step * 0.55, z + t + 5);
+  root.append(txt(lx, ly - 8, `t₀`, { class: "sheet-t", "text-anchor": "middle" }));
+  const [ax, ay] = iso(x + w / 2, y + d, z);
+  root.append(txt(ax, ay + 14, shape.join("×"), { class: "dim", "text-anchor": "middle" }));
+  if (width) {
+    const [vx, vy] = iso(x - 9, y - step * 0.55, z + t);
+    root.append(txt(vx - 8, vy + 3, String(width),
+      { class: "dim", "text-anchor": "end" }));
+  }
+}
+
 const el = (tag, attrs, kids) => {
   const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
@@ -196,7 +256,9 @@ export function render(svg, g, onPick) {
     if (!a || !b) continue;
     // join the blocks at half height, so an arrow meets a face rather than
     // skimming along the plate underneath
-    const p0 = iso(a.x + a.w, a.y + a.d / 2, a.z + a.h / 2);
+    const p0 = a.nd.plate
+      ? iso(a.x + 57, a.y - 2, a.z + 11)
+      : iso(a.x + a.w, a.y + a.d / 2, a.z + a.h / 2);
     const p1 = iso(b.x, b.y + b.d / 2, b.z + b.h / 2);
     const tip = [p1[0] - 9, p1[1]];
     let d;
@@ -235,8 +297,10 @@ export function render(svg, g, onPick) {
 
     const { x, y, z, w, d, h } = it;
     const x1 = x + w, y1 = y + d, z1 = z + h;
+    if (nd.plate) { drawPlate(root, nd, it, onPick); }
     const gEl = el("g", { class: "node", tabindex: "0", role: "button",
       "aria-label": nd.label });
+    if (!nd.plate) {
 
     // The residual, drawn first so the slabs sit on top of it. Its input and
     // output are at the same altitude by construction, so it is one straight
@@ -276,6 +340,7 @@ export function render(svg, g, onPick) {
     } else {
       shell(x, y, z, w, d, h, color);
     }
+    }
     const act = () => onPick && onPick(nd, it);
     gEl.addEventListener("click", act);
     gEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter") act(); });
@@ -285,7 +350,7 @@ export function render(svg, g, onPick) {
     // much it weighs, so the caption carries only what height cannot
     const [cx, cy] = iso(x + w / 2, y + d, z);
     const above = it.lane === 0;
-    if (!nd.repeat) {
+    if (!nd.repeat && !nd.plate) {
       // Dimensions labelled the way Box.sty does it: each number on the edge
       // it measures -- width under the front-bottom edge, height up the left
       // edge, depth sloped along the edge that recedes. Three numbers on three
