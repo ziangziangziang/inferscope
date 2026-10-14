@@ -166,6 +166,26 @@ export function wire(g, { p0, p1, shape = null, label = null, inset = 10 }) {
   return { mid };
 }
 
+/**
+ * A skip connection: the thing that makes a U-Net a U-Net.
+ *
+ * The ordinary router cannot draw these. A skip runs from a deep down-block
+ * back to an earlier up-block, so its endpoints are reversed relative to the
+ * flow of the diagram, and an orthogonal router collapses it into a stub that
+ * reads as a stray line. It is drawn instead as a curve *below* the lane,
+ * dipping under everything between its ends -- which is what a skip looks like
+ * in every drawing of a U-Net, and which keeps it visually distinct from the
+ * forward chain it bypasses.
+ */
+export function skipWire(g, { p0, p1, drop = 34 }) {
+  const y = Math.max(p0[1], p1[1]) + drop;
+  g.append(el("path", {
+    class: "skip",
+    d: `M ${p0[0]} ${p0[1]} C ${p0[0]} ${y}, ${p1[0]} ${y}, ${p1[0]} ${p1[1]}`,
+    "marker-end": "url(#arrow-skip)",
+  }));
+}
+
 /** Bounds that actually fit what was drawn. */
 export class Bounds {
   x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;

@@ -55,12 +55,37 @@ for (const f of readdirSync(cfgDir).filter((x) => x.endsWith(".json"))) {
     ok(m.vision !== null, "vision tower counted separately");
     ok(Math.abs(g.params / B - 8.2) < 0.5, "Qwen3-VL-8B within ~6% of ~8.2B");
   }
-  // a 65-layer stack must still read as 65
-  if (m.layers > 4) {
+  // Every repeated component, whatever family it is in, must hold exactly
+  // one copy's worth of its own sub-layers times the count. This used to be a
+  // single check on the language stack, which meant a diffusion U-Net block
+  // could be wrong by a factor and nothing noticed.
+  const reps = g.nodes.filter((n) => n.repeat);
+  ok(reps.length > 0, "the model has at least one repeated component");
+  for (const n of reps) {
+    const one = n.template.reduce((s, q) => s + q.params, 0);
+    ok(n.params === one * n.repeat,
+      `${n.label}: params ${n.params} == ${one} x ${n.repeat} (every copy, once)`);
+  }
+
+  if (g.family === "language" || g.family === "vision-language") {
     const stack = g.nodes.find((n) => n.repeat === m.layers);
     ok(!!stack, `the ${m.layers}-layer stack is one repeated component, not ${m.layers} boxes`);
-    ok(stack && stack.params === m.per_block * m.layers,
-      "repeated component holds every copy of the block");
+  }
+  if (g.family === "speech") {
+    const enc = g.nodes.find((n) => n.branch === "encoder" && n.repeat);
+    const dec = g.nodes.find((n) => n.branch === "decoder" && n.repeat);
+    ok(!!enc && !!dec, "speech has both an encoder and a decoder stack");
+    ok(dec && dec.template.some((q) => q.label === "Cross-attn"),
+      "the decoder stack really contains a cross-attention");
+  }
+  if (g.family === "diffusion") {
+    const downs = g.nodes.filter((n) => /^Down /.test(n.label));
+    const ups = g.nodes.filter((n) => /^Up /.test(n.label));
+    const skips = g.edges.filter((e) => e.skip);
+    ok(downs.length > 0 && downs.length === ups.length,
+      `a U-Net: ${downs.length} down levels and ${ups.length} up levels`);
+    ok(skips.length === downs.length - 1,
+      `the U-Net carries ${downs.length - 1} skip connections, which is what makes it one`);
   }
 }
 

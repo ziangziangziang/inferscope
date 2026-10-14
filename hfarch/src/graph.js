@@ -9,11 +9,20 @@
  */
 import { attention, family, heads, mlp, moe, norm, pick, position, vision, COMMON }
   from "./blocks.js";
+import { buildDiffusion, buildSpeech, buildVAE } from "./families.js";
 
 const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : d);
 
 export function build(cfg) {
   const fam = family(cfg);
+
+  // The non-transformer families used to fall through to the language builder
+  // and die with "config declares no hidden size or layer count", which is a
+  // confusing way to be told the viewer has never seen your model.
+  if (fam === "speech") return buildSpeech(cfg);
+  if (fam === "vae") return buildVAE(cfg);
+  if (fam === "diffusion") return buildDiffusion(cfg);
+
   const text = pick(cfg, "text_config") || cfg;      // VLMs nest the LM stack
   const { hidden, h, kv, hd } = heads(text);
   const layers = n(pick(text, "num_hidden_layers", "n_layer", "num_layers"));
@@ -118,8 +127,14 @@ export function build(cfg) {
         params: vis.blocks, branch: "vision", repeat: vis.layers,
         dims: { layers: vis.layers, width: vis.hidden },
         note: "the same shape in every block",
+        // The template has to add up to the block. It did not: vis.blocks counts
+        // the two norms per block, and the template listed only attention and MLP, so
+        // parts x count came to 267,743,232 against a stated 267,805,440 -- a
+        // 62,208 gap that no single-family test was looking at.
         template: [
+          { id: "vn1", label: "LayerNorm", kind: "norm", params: vis.hidden },
           { id: "va", label: "Attention", kind: "attention", params: vis.attn.params },
+          { id: "vn2", label: "LayerNorm", kind: "norm", params: vis.hidden },
           { id: "vm", label: "MLP", kind: "mlp", params: vis.mlp.params },
         ] },
       { id: "merger", label: "Merger", kind: "projector", params: vis.merge,

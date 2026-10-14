@@ -16,7 +16,7 @@
  *      up. Parameter count is on the card now, where it can be read.
  */
 import { fmt } from "./hub.js";
-import { Bounds, KINDS, el, txt } from "./prim.js";
+import { Bounds, KINDS, el, skipWire, txt } from "./prim.js";
 import { block, defs, isoCard, isoPlate, isoResidual, plate, residual, tower, wire }
   from "./modules.js";
 import { iso } from "./prim.js";
@@ -37,6 +37,13 @@ const LANE3 = 228;       // 3D: world-y spacing between lanes; at 150 the
 const CARD_H = 126;
 const X0 = 40;
 const Y0 = 74;
+
+/** A readable name for a lane. Calling an encoder lane "language stack" is
+ *  the kind of default that survives long after it stops being true. */
+const LANE_NAMES = {
+  vision: "vision branch", text: "language stack", encoder: "encoder",
+  decoder: "decoder", unet: "U-Net", out: "output", main: "pipeline",
+};
 
 /** Stage per node, from the edges. */
 function stages(g) {
@@ -114,6 +121,16 @@ function layout(g) {
   return { items, byId: new Map(items.map((i) => [i.nd.id, i])), cols };
 }
 
+/** The lanes this graph actually has, in drawing order. */
+function laneList(items) {
+  const seen = [];
+  for (const it of items) {
+    const b = it.nd.branch || "text";
+    if (!seen.includes(b)) seen.push(b);
+  }
+  return seen.map((b) => [b, LANE_NAMES[b] || b.replace(/^./, (c) => c.toUpperCase())]);
+}
+
 export function render(svg, g, onPick, mode = "2d") {
   if (mode === "3d") return render3d(svg, g, onPick);
   svg.replaceChildren();
@@ -131,6 +148,15 @@ export function render(svg, g, onPick, mode = "2d") {
   for (const e of g.edges) {
     const a = byId.get(e.from), b = byId.get(e.to);
     if (!a || !b) continue;
+    if (e.skip) {
+      // leave from the bottom of one block and arrive at the bottom of the
+      // other, dipping under the lane between them
+      const p0 = [a.x + a.w / 2, a.y + a.h];
+      const p1 = [b.x + b.w / 2, b.y + b.h];
+      skipWire(L.wire, { p0, p1, drop: 26 + Math.abs(a.x - b.x) / 40 });
+      bb.add(Math.min(p0[0], p1[0]), p0[1]).add(Math.max(p0[0], p1[0]), p0[1] + 60);
+      continue;
+    }
     const p0 = [a.x + a.w, a.y + a.h / 2];
     const p1 = [b.x, b.y + b.h / 2];
     wire(L.wire, { p0, p1, shape: e.shape ? e.shape.join("×") : null });
@@ -179,7 +205,7 @@ export function render(svg, g, onPick, mode = "2d") {
   }
 
   // ---- 4. lane captions, in their own margin ----
-  for (const [name, title] of [["vision", "vision branch"], ["text", "language stack"]]) {
+  for (const [name, title] of laneList(items)) {
     const own = items.filter((i) => (i.nd.branch || "text") === name);
     if (!own.length) continue;
     const li = own[0].lane;
@@ -192,8 +218,9 @@ export function render(svg, g, onPick, mode = "2d") {
 
   // column count is worth stating: it is the model's depth
   L.label.append(txt(Math.min(...items.map((i) => i.x)), Y0 - 30,
-    `${cols} stages deep · every count derived from config.json`, { class: "cap" }));
-  bb.add(0, Y0 - 46).add(700, Y0 - 18);
+    `${cols} steps in the longest chain · every count derived from config.json`,
+    { class: "cap" }));
+  bb.add(0, Y0 - 46).add(760, Y0 - 18);
 
   svg.setAttribute("viewBox", bb.viewBox(30));
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
@@ -243,14 +270,33 @@ function installPanZoom(svg, root) {
   svg.addEventListener("pointerleave", end);
 }
 
+/**
+ * One sentence about the whole model, for the header.
+ *
+ * It has to fit the family. "9 layers × 320 wide · 0 heads over 0 kv" is what a
+ * transformer template produces when handed a U-Net: a head count of zero and a
+ * "layer" that is actually a resolution level.
+ */
 export function describe(g) {
   const m = g.meta;
+  const n = fmt(g.params);
+  if (g.family === "diffusion") {
+    return `diffusion · ${m.levels.length} levels · ${m.levels.join(" → ")} channels`
+      + ` · ${n} derived; the feed-forward inside each block is not declared in the config`;
+  }
+  if (g.family === "vae") {
+    return `vae · ${m.levels.length} levels · ${m.levels.join(" → ")} channels · ${n} derived`;
+  }
+  if (g.family === "speech") {
+    return `speech · ${m.encoder_layers} encoder + ${m.decoder_layers} decoder blocks`
+      + ` · ${m.mel_bins || "?"} mel bins, width ${m.hidden} · ${n} derived`;
+  }
   const bits = [
     `${m.layers} layers × ${m.hidden} wide`,
     `${m.heads} heads over ${m.kv_heads} kv`,
     m.moe ? `${m.moe.experts} experts, top-${m.moe.top_k}` : null,
     m.vision ? `vision ${m.vision.layers}×${m.vision.hidden}` : null,
-    `${fmt(g.params)} parameters, derived from config`,
+    `${n} parameters, derived from config`,
   ].filter(Boolean);
   return `${g.family} · ${bits.join(" · ")}`;
 }
@@ -302,6 +348,13 @@ function render3d(svg, g, onPick) {
   for (const e of g.edges) {
     const a = world.get(e.from), b = world.get(e.to);
     if (!a || !b) continue;
+    if (e.skip) {
+      const q0 = iso(a.x + a.w / 2, a.y + a.d, a.z);
+      const q1 = iso(b.x + b.w / 2, b.y + b.d, b.z);
+      skipWire(L.wire, { p0: q0, p1: q1, drop: 40 + Math.abs(a.x - b.x) / 30 });
+      bb.add(Math.min(q0[0], q1[0]), q0[1]).add(Math.max(q0[0], q1[0]), q0[1] + 90);
+      continue;
+    }
     const p0 = iso(a.x + a.w, a.y + a.d / 2, a.z + a.h / 2);
     const p1 = iso(b.x, b.y + b.d / 2, b.z + b.h / 2);
     wire(L.wire, { p0, p1, shape: e.shape ? e.shape.join("×") : null });
@@ -354,7 +407,7 @@ function render3d(svg, g, onPick) {
   }
 
   // ---- lane captions ----
-  for (const [name, title] of [["vision", "vision branch"], ["text", "language stack"]]) {
+  for (const [name, title] of laneList(items)) {
     const own = items.filter((i) => (i.nd.branch || "text") === name);
     if (!own.length) continue;
     const w0 = world.get(own[0].nd.id);

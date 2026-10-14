@@ -74,7 +74,9 @@ export function tower(g, { x, y, w, h, label, sub, count = 0, kind = "stack",
       const pw = Math.max(3, (weights[i] / tot) * inner);
       band(g, { x: cx, y: stripY, w: pw, h: stripH, fill: KINDS[p.kind] || base,
         opacity: 0.85 });
-      if (pw > 26) {
+      // only label a band that can hold the label: Self-attn and
+      // Cross-attn overprinted each other when the bands were adjacent
+      if (pw > 52) {
         g.append(txt(cx + pw / 2, stripY + 12, p.label,
           { class: "band-t", "text-anchor": "middle" }));
       }
@@ -142,6 +144,10 @@ export function defs() {
       id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5",
       markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse",
     }, [el("path", { d: "M 0 1.5 L 9.5 5 L 0 8.5 z", fill: "#7f9478" })]),
+    el("marker", {
+      id: "arrow-skip", viewBox: "0 0 10 10", refX: "9", refY: "5",
+      markerWidth: "6.5", markerHeight: "6.5", orient: "auto-start-reverse",
+    }, [el("path", { d: "M 0 1.5 L 9.5 5 L 0 8.5 z", fill: "#b98a4e" })]),
   ]);
 }
 

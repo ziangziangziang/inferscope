@@ -143,11 +143,21 @@ export function vision(cfg) {
 export function family(cfg) {
   if (vision(cfg)) return "vision-language";
   if (pick(cfg, "audio_config", "speech_config")) return "omni";
+  // diffusers writes its class into _class_name, not architectures, so a bare
+  // unet/config.json or vae/config.json has neither of the two keys this used
+  // to look at and fell through to the language builder
   const arch = ((pick(cfg, "architectures") || [])[0]) || "";
+  const cls = String(pick(cfg, "_class_name") || "");
   const t = String(pick(cfg, "model_type") || "");
-  if (["StableDiffusionPipeline", "UNet2DConditionModel"].includes(arch) ||
+  // _class_name is the only reliable tell: a VAE has up_block_types too, so
+  // keying on its presence sent every AutoencoderKL down the UNet path
+  if (/Autoencoder/i.test(cls)) return "vae";
+  if (pick(cfg, "block_out_channels")) return "diffusion";
+  if ([arch, cls].some((a) => /UNet2DConditionModel|DiTTransformer2DModel/.test(a)) ||
       (t === "unet" && pick(cfg, "in_channels"))) return "diffusion";
+  if (pick(cfg, "encoder_layers") && pick(cfg, "decoder_layers")) return "speech";
   if (arch.includes("Whisper") || t === "whisper") return "speech";
+  if (/AutoencoderKL|AutoencoderDC/.test(cls)) return "vae";
   return "language";
 }
 

@@ -197,3 +197,6 @@ main { display: flex; min-height: calc(100vh - 52px); }
 .mode:hover { border-color: var(--accent); color: var(--accent); }
 .mode[aria-pressed="true"] { background: var(--accent); color: #fff;
   border-color: var(--accent); }
+
+/* a U-Net skip: dashed, under the lane, unmistakably not the forward chain */
+.skip { fill: none; stroke: #b98a4e; stroke-width: 1.8; stroke-dasharray: 5 4; }
