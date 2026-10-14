@@ -173,11 +173,18 @@ export function Index({ onOpen, onOpenDetails }: {
     api.models()
       .then((m) => {
         if (cancelled || !m.models?.length) return null;
-        // Prefer whichever model the running engine actually loaded.
+        // Only an actual match will do. Falling back to "the last model in the
+        // registry" described the wrong checkpoint with total confidence — a
+        // vision model was being shown a text model's layers — so an unmatched
+        // name yields no architecture rather than a borrowed one.
         const want = (server?.model ?? "").replace(/\.gguf$/i, "");
         const found = m.models.find((x) => x.model_id === want)
-          ?? m.models.find((x) => want && want.startsWith(x.model_id))
-          ?? m.models[m.models.length - 1];
+          ?? m.models.find((x) => want && (want.startsWith(x.model_id)
+                                           || x.model_id.startsWith(want)));
+        if (!found) {
+          if (!cancelled) setArch(null);
+          return null;
+        }
         return api.modelArch(found.model_id)
           .then((g) => { if (!cancelled) setArch(toArch(g)); })
           .catch(() => {});

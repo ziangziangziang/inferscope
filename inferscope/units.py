@@ -180,6 +180,7 @@ def discover(cfg, specs) -> list[Unit]:
                 binary=spec.binary, size_bytes=_dir_size(path),
                 engine_role=spec.purpose,
                 accepts=ACCEPTS.get(spec.key, ("text",)),
+                arch=_engine_arch(spec.key, path, label),
                 configured=bool(spec.binary) and os.access(spec.binary, os.X_OK),
                 problem="" if spec.binary and os.access(spec.binary, os.X_OK)
                         else (spec.configured()[1] or "no binary configured"),
@@ -208,6 +209,32 @@ def mmproj_for(model_path: str) -> Optional[str]:
             # only claim it if it is a real file, not a half-finished download
             if os.path.isfile(p) and os.path.getsize(p) > 1 << 20:
                 return p
+    return None
+
+
+def _gguf_arch(path: str, label: str):
+    """The checkpoint's own architecture, read from its GGUF header."""
+    try:
+        from .gguf_arch import build_gguf_arch
+        return build_gguf_arch(path, label)
+    except Exception:                       # noqa: BLE001
+        return None
+
+
+def _engine_arch(engine: str, path: str, label: str):
+    """Architecture for the engines that ship a config beside the weights."""
+    try:
+        if engine == "tts":
+            from .diffusers_arch import build_piper_arch
+            return build_piper_arch(path, label)
+        if engine == "image":
+            from .diffusers_arch import build_image_arch
+            return build_image_arch(path, label)
+        if engine == "video":
+            from .diffusers_arch import build_video_arch
+            return build_video_arch(path, label)
+    except Exception:                       # noqa: BLE001
+        return None
     return None
 
 
@@ -253,6 +280,7 @@ def _llm_units(cfg) -> list[Unit]:
                 managed=False,
                 accepts=("text", "image") if proj else ("text",),
                 mmproj=proj,
+                arch=_gguf_arch(path, label),
                 note="sees pictures too" if proj else "loads through Run & capture",
             ))
     for extra in roots[1:]:

@@ -324,7 +324,7 @@ export function layoutArch(nodes: ArchNode[], opts: LayoutOpts): ArchLayout {
         for (let i = 0; i < count; i++) {
           items.push({
             id: `${n.id}#${i}`, node: n, groupId: n.id, groupCount: count, unitIndex: i,
-            sub, column: col, order: n.order ?? 0,
+            sub, column: col, order: n.order ?? 0, branch: n.branch,
             x: x + (i % gc) * (us + g), y: Math.floor(i / gc) * (us + g), z: 0,
             w: us, d: us, h,
           });
@@ -334,7 +334,7 @@ export function layoutArch(nodes: ArchNode[], opts: LayoutOpts): ArchLayout {
       } else {
         const s = size(n.params);
         items.push({
-          id: n.id, node: n, column: col, order: n.order ?? 0,
+          id: n.id, node: n, column: col, order: n.order ?? 0, branch: n.branch,
           x, y: 0, z: 0, w: s, d: s, h,
         });
         deepest = Math.max(deepest, s);
