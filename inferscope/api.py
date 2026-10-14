@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 from collections import deque
@@ -1077,6 +1078,84 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
+
+    # ---------------- in-browser architecture viewer ----------------
+    @app.get("/api/hf/config", include_in_schema=False)
+    async def hf_config(repo: str = ""):
+        """Fetch a model's config files for /hfarch.
+
+        The viewer runs entirely in the browser, but a browser behind a
+        corporate network or a China-region CDN may not be able to reach the
+        Hub — and this host cannot reach it either without its egress proxy.
+        So the page falls back to this same-origin route.
+
+        It is deliberately narrow. Only three filenames, only two allowlisted
+        hosts, and the repo must look like `owner/name`. It is a passthrough for
+        public model metadata, not a general fetcher.
+        """
+        repo = (repo or "").strip().strip("/")
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            raise HTTPException(400, "give a model name like Qwen/Qwen3-4B")
+        proxy = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+                 or None)
+        import httpx
+
+        async def fetch(host: str, via) -> tuple[dict, str | None]:
+            """Get config.json from one host; the rest is optional garnish.
+
+            config.json is fetched alone and first, because it is the only file
+            that decides success. Asking a dead host for all three files before
+            giving up costs three timeouts instead of one.
+            """
+            try:
+                async with httpx.AsyncClient(timeout=8.0, proxy=via,
+                                              follow_redirects=True) as c:
+                    r = await c.get(f"{host}/{repo}/resolve/main/config.json")
+                    if r.status_code == 200:
+                        try:
+                            cfg = r.json()
+                        except Exception as e:
+                            # name the exception: "not JSON" on its own sent
+                            # me looking at the mirror instead of at this line
+                            return {}, f"config.json is not JSON ({type(e).__name__})"
+                        return cfg, None      # caller does the keying
+                    if r.status_code in (401, 403):
+                        return {}, (r.text[:200].strip() or "this repo is gated")
+                    return {}, f"HTTP {r.status_code}"
+            except Exception as e:
+                return {}, f"{type(e).__name__}: {host}"
+
+        # Race the hosts: whichever answers first wins. Sequential would spend
+        # a full timeout on an unreachable one before trying the other.
+        results = await asyncio.gather(
+            fetch("https://huggingface.co", proxy),
+            fetch("https://hf-mirror.com", proxy),
+        )
+        pairs = [("https://huggingface.co", results[0]),
+                 ("https://hf-mirror.com", results[1])]
+
+        for host, (cfg, note) in pairs:
+            if not cfg:
+                continue
+            files: dict[str, Any] = {"config.json": cfg}
+            try:
+                async with httpx.AsyncClient(timeout=5.0, proxy=proxy,
+                                              follow_redirects=True) as c:
+                    for name in ("generation_config.json",
+                                 "preprocessor_config.json"):
+                        try:
+                            g = await c.get(f"{host}/{repo}/resolve/main/{name}")
+                            if g.status_code == 200:
+                                files[name] = g.json()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            return {"repo": repo, "host": host, "files": files}
+
+        raise HTTPException(502, "; ".join(
+            f"{host.split('//')[1]}: {note}" for host, (cfg, note) in pairs
+            if not cfg and note))
 
     # ---------------- static frontend ----------------
     dist = cfg.data_dir.parent / "ui" / "dist"
