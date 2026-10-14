@@ -124,3 +124,6 @@ main { display: flex; min-height: calc(100vh - 52px); }
 .status .meta { color: var(--faint); font-family: ui-monospace, monospace; font-size: 11px; }
 .status .meta b { color: var(--dim); font-weight: 600; }
 @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+
+/* the residual: one straight line, at the block's own altitude */
+.residual { fill: none; stroke: #b98a4e; stroke-width: 1.8; stroke-linecap: butt; }

@@ -29,6 +29,10 @@ const poly = (pts) => pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).jo
 const COL = 152;      // world-x spacing between stages
 const LANE = 172;     // world-y spacing between branches; at 108 the
                        // front lane landed on top of the back one
+const DROP = 26;      // altitude lost per stage -- the U-Net profile: the
+                       // pipeline descends as it goes. It is also what lets a
+                       // residual run straight, because a block and its own
+                       // bypass share one altitude and need no turn.
 const INK = "#2f3a2c";
 
 /** block face colours, one per kind */
@@ -73,6 +77,24 @@ function bulk(params, max) {
   return Math.max(0, Math.min(1, Math.log10(params + 1) / Math.log10(max + 1)));
 }
 
+/**
+ * Split a block's height between its sub-layers, so a decoder block is drawn as
+ * a stack of slabs rather than one solid lump. Heights follow the parameters
+ * each sub-layer holds, with a floor so a 4K norm is still visible.
+ */
+function slabPlan(nd, h) {
+  const parts = nd.template;
+  const tot = parts.reduce((a, q) => a + (q.params || 1), 0);
+  const room = h - (parts.length - 1) * 1.5;
+  let z = 0;
+  return parts.map((q) => {
+    const sh = Math.max(5, (q.params || 1) / tot * room);
+    const out = { sub: q, dz: z, h: sh };
+    z += sh + 1.5;
+    return out;
+  });
+}
+
 /** Stage per node, from the edges: one column right of whatever feeds it. */
 function stages(g) {
   const st = new Map();
@@ -104,16 +126,19 @@ function layout(g) {
     const list = lanes.get(name).slice().sort((a, b) => st.get(a.id) - st.get(b.id));
     for (const nd of list) {
       const t = bulk(nd.params, max);
-      const x = st.get(nd.id) * COL;
+      const stage = st.get(nd.id);
+      const x = stage * COL;
       const y = li * LANE;
-      const w = 74, d = 26 + t * 30, h = 20 + t * 52;
+      const z = -stage * DROP;                 // altitude encodes position
+      const w = 74, d = 26 + t * 26;
       const repeat = nd.repeat || 0;
       if (repeat > 4) {
-        items.push({ nd, i: 0, x: x - 52, y, z: 0, w, d, h, lane: li });
-        items.push({ nd, i: -1, hidden: repeat - 2, x: x - 6, y, z: 0, w: 40, d, h, lane: li });
-        items.push({ nd, i: repeat - 1, x: x + 26, y, z: 0, w, d, h, lane: li });
+        const h = 52 + t * 40;
+        items.push({ nd, i: 0, x: x - 52, y, z, w, d, h, lane: li });
+        items.push({ nd, i: -1, hidden: repeat - 2, x: x - 6, y, z, w: 40, d, h, lane: li });
+        items.push({ nd, i: repeat - 1, x: x + 26, y, z, w, d, h, lane: li });
       } else {
-        items.push({ nd, i: -1, x, y, z: 0, w, d, h, lane: li });
+        items.push({ nd, i: -1, x, y, z, w, d, h: 18 + t * 46, lane: li });
       }
     }
   });
@@ -141,8 +166,8 @@ export function render(svg, g, onPick) {
     bb.y0 = Math.min(bb.y0, y); bb.y1 = Math.max(bb.y1, y);
   };
   for (const it of items) {
-    for (const p of [iso(it.x, it.y, 0), iso(it.x + it.w, it.y + it.d, it.h),
-      iso(it.x, it.y + it.d, 0), iso(it.x + it.w, it.y, 0)]) add(p[0], p[1]);
+    for (const p of [iso(it.x, it.y, it.z), iso(it.x + it.w, it.y + it.d, it.z + it.h),
+      iso(it.x, it.y + it.d, it.z), iso(it.x + it.w, it.y, it.z)]) add(p[0], p[1]);
     const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d, 0);
     add(cx - 60, cy + 30); add(cx + 60, cy + 30);     // room for the caption
     add(cx - 60, cy - 14); add(cx + 60, cy - 14);
@@ -155,23 +180,10 @@ export function render(svg, g, onPick) {
     `${(bb.x0 - pad).toFixed(0)} ${(bb.y0 - pad).toFixed(0)} ` +
     `${(bb.x1 - bb.x0 + pad * 2).toFixed(0)} ${(bb.y1 - bb.y0 + pad * 2).toFixed(0)}`);
 
-  // ---- ground ----
-  const gx0 = -18, gy0 = -18;
-  const gx1 = Math.max(...items.map((i) => i.x + i.w)) + 18;
-  const gy1 = Math.max(...items.map((i) => i.y + i.d)) + 18;
-  root.append(el("polygon", {
-    points: poly([iso(gx1, gy0, 0), iso(gx1, gy1, 0), iso(gx1, gy1, -6), iso(gx1, gy0, -6)]),
-    fill: "#b0c8a9", stroke: "#7d9c78", "stroke-width": 1,
-  }));
-  root.append(el("polygon", {
-    points: poly([iso(gx0, gy1, 0), iso(gx1, gy1, 0), iso(gx1, gy1, -6), iso(gx0, gy1, -6)]),
-    fill: "#c2d8bb", stroke: "#7d9c78", "stroke-width": 1,
-  }));
-  root.append(el("polygon", {
-    points: poly([iso(gx0, gy0, 0), iso(gx1, gy0, 0), iso(gx1, gy1, 0), iso(gx0, gy1, 0)]),
-    fill: "#e9f1e4", stroke: "#88a882", "stroke-width": 1.2,
-  }));
-
+  // No ground plate. The plate in the workbench is honest there -- those parts
+  // physically sit on a host -- but a flat plane contradicts the one thing
+  // altitude is now for: the pipeline descending through space. Blocks at
+  // stage 6 sank straight through it.
   // ---- arrows ----
   // Two rules, both of which the first attempt broke:
   //  - every turn is a right angle. The old path ended `L p1.x p1.y` from a
@@ -184,8 +196,8 @@ export function render(svg, g, onPick) {
     if (!a || !b) continue;
     // join the blocks at half height, so an arrow meets a face rather than
     // skimming along the plate underneath
-    const p0 = iso(a.x + a.w, a.y + a.d / 2, a.h / 2);
-    const p1 = iso(b.x, b.y + b.d / 2, b.h / 2);
+    const p0 = iso(a.x + a.w, a.y + a.d / 2, a.z + a.h / 2);
+    const p1 = iso(b.x, b.y + b.d / 2, b.z + b.h / 2);
     const tip = [p1[0] - 9, p1[1]];
     let d;
     if (Math.abs(p0[1] - p1[1]) < 1.5) {
@@ -206,7 +218,7 @@ export function render(svg, g, onPick) {
       const p0 = iso(it.x + 4, it.y + it.d / 2, it.h / 2);
       const p1 = iso(it.x + it.w - 4, it.y + it.d / 2, it.h / 2);
       root.append(el("line", { class: "gap", x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }));
-      const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d * 0.86, it.h);
+      const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d * 0.78, it.z + it.h);
       root.append(txt(cx, cy - 4, `×${it.hidden}`, {
         class: "gap-n", "text-anchor": "middle",
       }));
@@ -217,31 +229,38 @@ export function render(svg, g, onPick) {
     const x1 = x + w, y1 = y + d, z1 = z + h;
     const gEl = el("g", { class: "node", tabindex: "0", role: "button",
       "aria-label": nd.label });
-    gEl.append(el("polygon", {
-      points: poly([iso(x, y1, z), iso(x, y1, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
-      fill: color, "fill-opacity": 0.22, stroke: INK, "stroke-width": 0.9,
-    }));
-    gEl.append(el("polygon", {
-      points: poly([iso(x1, y, z), iso(x1, y, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
-      fill: color, "fill-opacity": 0.14, stroke: INK, "stroke-width": 0.9,
-    }));
-    gEl.append(el("polygon", {
-      points: poly([iso(x, y, z1), iso(x1, y, z1), iso(x1, y1, z1), iso(x, y1, z1)]),
-      fill: "#ffffff", "fill-opacity": 0.62, stroke: INK, "stroke-width": 0.9,
-    }));
-    // what is inside one instance, painted on the lid the way the main app
-    // draws the cells on its parts
+
+    // The residual, drawn first so the slabs sit on top of it. Its input and
+    // output are at the same altitude by construction, so it is one straight
+    // line with no bend at all -- which is the whole reason the blocks are
+    // separated in height.
+    if (nd.repeat) {
+      const a0 = iso(x - 14, y + d / 2, z);
+      const a1 = iso(x1 + 16, y + d / 2, z);
+      root.append(el("path", { class: "residual",
+        d: `M ${a0[0]} ${a0[1]} L ${a1[0]} ${a1[1]}`, "marker-end": "url(#head)" }));
+    }
+    const shell = (bx, by, bz, bw, bd, bh, c) => {
+      const bx1 = bx + bw, by1 = by + bd, bz1 = bz + bh;
+      gEl.append(el("polygon", {
+        points: poly([iso(bx, by1, bz), iso(bx, by1, bz1), iso(bx1, by1, bz1), iso(bx1, by1, bz)]),
+        fill: c, "fill-opacity": 0.22, stroke: INK, "stroke-width": 0.8,
+      }));
+      gEl.append(el("polygon", {
+        points: poly([iso(bx1, by, bz), iso(bx1, by, bz1), iso(bx1, by1, bz1), iso(bx1, by1, bz)]),
+        fill: c, "fill-opacity": 0.14, stroke: INK, "stroke-width": 0.8,
+      }));
+      gEl.append(el("polygon", {
+        points: poly([iso(bx, by, bz1), iso(bx1, by, bz1), iso(bx1, by1, bz1), iso(bx, by1, bz1)]),
+        fill: "#ffffff", "fill-opacity": 0.62, stroke: INK, "stroke-width": 0.8,
+      }));
+    };
     if (nd.template?.length) {
-      const n = nd.template.length;
-      const gap = 0.025;
-      const uw = (1 - gap * (n + 1)) / n;
-      nd.template.forEach((sub, i) => {
-        gEl.append(el("polygon", {
-          points: topPatch(x, y, w, d, z1, gap + i * (uw + gap), 0.14, uw, 0.48),
-          fill: KINDS[sub.kind] || KINDS.tensor, "fill-opacity": 0.8,
-          stroke: INK, "stroke-width": 0.55,
-        }));
-      });
+      for (const sl of slabPlan(nd, h)) {
+        shell(x, y, z + sl.dz, w, d, sl.h, KINDS[sl.sub.kind] || KINDS.tensor);
+      }
+    } else {
+      shell(x, y, z, w, d, h, color);
     }
     const act = () => onPick && onPick(nd, it);
     gEl.addEventListener("click", act);
@@ -250,7 +269,7 @@ export function render(svg, g, onPick) {
 
     // caption under the front face; the block's own height already says how
     // much it weighs, so the caption carries only what height cannot
-    const [cx, cy] = iso(x + w / 2, y + d, 0);
+    const [cx, cy] = iso(x + w / 2, y + d, z);
     if (!nd.repeat) {
       const room = Math.max(6, Math.floor(w / 3.1));
       const title = nd.label.length > room ? nd.label.slice(0, room - 1) + "…" : nd.label;
@@ -259,7 +278,7 @@ export function render(svg, g, onPick) {
       const above = it.lane === 0;
       // a caption is wider than its block, so the front one is pushed off the
       // face rather than laid across it
-      const [tx, ty] = above ? iso(x + w / 2, y, it.h) : iso(x + w / 2, y + d + 18, 0);
+      const [tx, ty] = above ? iso(x + w / 2, y, z + h) : iso(x + w / 2, y + d + 18, z);
       root.append(txt(tx, ty + (above ? -10 : 4), title,
         { class: "cap", "text-anchor": "middle" }));
     }
@@ -273,10 +292,10 @@ export function render(svg, g, onPick) {
     const x1 = Math.max(...own.map((i) => i.x + i.w));
     const back = own[0].y;
     const above = own[0].lane === 0;
-    const at = above ? iso((x0 + x1) / 2, back, own[0].h)
-      : iso((x0 + x1) / 2, own[0].y + own[0].d + 46, 0);
+    const at = above ? iso((x0 + x1) / 2, back, own[0].z + own[0].h)
+      : iso((x0 + x1) / 2, own[0].y + own[0].d + 46, own[0].z);
     // clear of the xN marker, which sits on the top face at the same height
-    const dy = above ? -54 : 16;
+    const dy = above ? -72 : 16;
     root.append(txt(at[0], at[1] + dy, `${nd.label}`,
       { class: "cap", "text-anchor": "middle" }));
     root.append(txt(at[0], at[1] + dy + 12,
