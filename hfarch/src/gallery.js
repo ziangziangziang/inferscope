@@ -9,7 +9,7 @@
  * It imports the same modules the renderer composes with. Nothing is
  * re-implemented here, so a cell cannot drift from what actually ships.
  */
-import { Bounds, KINDS, box, el } from "./iso.js";
+import { KINDS, box, el, iso } from "./iso.js";
 import { edges, elision, plate, residual, tower, wire } from "./modules.js";
 
 const NS = "http://www.w3.org/2000/svg";
@@ -23,7 +23,9 @@ const CELLS = [
     (r) => plate(r, {})],
   ["elision", "first … ×N … last", (r) => elision(r, {})],
   ["residual", "the bypass and the add where it rejoins", (r) => residual(r, {})],
-  ["wire", "a connection, orthogonal, tensor written underneath", (r) => wire(r, {})],
+  ["wire", "a connection, orthogonal, tensor written underneath",
+    (r) => wire(r, { p0: iso(90, 10, 0), p1: iso(250, 70, 0),
+      shape: ["B", "T", 4096], head: "url(#gh)" })],
   ["edges", "dimensions on the three edges they measure", (r) => edges(r, {})],
 ];
 

@@ -33,6 +33,16 @@ export const KINDS = {
   moe: "#c99962",
 };
 
+/** Lighten (amt > 0) or darken (amt < 0) a hex colour, staying in gamut. */
+export function tint(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+    const t = amt >= 0 ? v + (255 - v) * amt : v * (1 + amt);
+    return Math.max(0, Math.min(255, Math.round(t)));
+  });
+  return `#${ch.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export function el(tag, attrs = {}, kids) {
   const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs || {})) if (v != null) e.setAttribute(k, v);
@@ -47,25 +57,37 @@ export function txt(x, y, s, attrs = {}) {
 /**
  * One box: the three faces this camera can see.
  *
- * Face opacity is the whole trick. A solid box drawn in isometric reads as a
- * flat hexagon with three lines in it; the same box reads as a solid only when
- * the top is nearly opaque and the two sides fall away from it. These numbers
- * come from the workbench's `iso.tsx`, which is what the two views share.
+ * The faces are **opaque and tinted**, not the same colour at three alphas.
+ * The workbench gets away with alpha because its parts sit on a solid ground
+ * plate with nothing behind them; here a connector runs behind every block, so
+ * a translucent face shows the wire through the block and the drawing reads as
+ * a mistake. Tinting gives the same three-tone volume with nothing behind it
+ * showing.
+ *
+ * Light comes from above: the lid is the lightest, the left face mid, the right
+ * face darkest.
  */
-export function box(g, { x, y, z, w, d, h, color, top = 0.62, left = 0.22,
-  right = 0.14, stroke = INK, sw = 0.9 }) {
+export function box(g, { x, y, z, w, d, h, color, solid = true,
+  top = 0.52, left = -0.04, right = -0.26, stroke = INK, sw = 0.9 }) {
   const x1 = x + w, y1 = y + d, z1 = z + h;
+  const face = solid
+    ? [tint(color, left), tint(color, right), tint(color, top)]
+    : [color, color, "#ffffff"];
+  const op = solid ? 1 : null;
   g.append(el("polygon", {
     points: poly([iso(x, y1, z), iso(x, y1, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
-    fill: color, "fill-opacity": left, stroke, "stroke-width": sw,
+    fill: face[0], "fill-opacity": solid ? op : left === -0.04 ? 0.22 : 0.22,
+    stroke, "stroke-width": sw,
   }));
   g.append(el("polygon", {
     points: poly([iso(x1, y, z), iso(x1, y, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
-    fill: color, "fill-opacity": right, stroke, "stroke-width": sw,
+    fill: face[1], "fill-opacity": solid ? op : 0.14,
+    stroke, "stroke-width": sw,
   }));
   g.append(el("polygon", {
     points: poly([iso(x, y, z1), iso(x1, y, z1), iso(x1, y1, z1), iso(x, y1, z1)]),
-    fill: "#ffffff", "fill-opacity": top, stroke, "stroke-width": sw,
+    fill: face[2], "fill-opacity": solid ? op : 0.62,
+    stroke, "stroke-width": sw,
   }));
 }
 

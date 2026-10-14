@@ -19,11 +19,16 @@
  *     make every block except the embedding a speck.
  */
 import { fmt } from "./hub.js";
-import { Bounds, INK, KINDS, box, el, iso, poly, txt } from "./iso.js";
+import { Bounds, KINDS, box, el, iso, txt } from "./iso.js";
+import { edges, gapMark, plate, residual, tower, wire } from "./modules.js";
 
-const COL = 152;      // world-x spacing between stages
-const LANE = 172;     // world-y spacing between branches; at 108 the
-                       // front lane landed on top of the back one
+const COL = 176;      // world-x spacing between stages; the blocks got
+                       // wider so their captions fit on the face
+const LANE = 208;     // world-y spacing between branches. At 108 the
+                       // front lane landed on the back one; at 172 the two
+                       // towers themselves overlapped. A tower is much wider
+                       // than a plain block, so the lane has to clear the widest
+                       // thing in it, not the average one.
 const DROP = 26;      // altitude lost per stage -- the U-Net profile: the
                        // pipeline descends as it goes. It is also what lets a
                        // residual run straight, because a block and its own
@@ -103,6 +108,56 @@ function drawPlate(root, nd, it, hit) {
   }
 }
 
+
+/**
+ * A label placer.
+ *
+ * Text in an isometric drawing does not get a free position. Every caption
+ * wants the same place -- under the block, centred -- and the lanes are close
+ * enough that they land on each other's bodies. Handing every label its
+ * preferred spot is what produced the mess: captions crossing blocks, "622.3M"
+ * bisected by a face, "S×1152" written through a wire.
+ *
+ * So labels are requests, not placements. Each one offers several candidate
+ * anchors in order of preference, the biggest and most important labels are
+ * placed first, and a candidate is accepted only if its rectangle is clear of
+ * everything already down. Labels that genuinely have nowhere to go keep their
+ * preferred spot rather than being dropped -- losing a caption is worse than an
+ * overlapping one.
+ */
+class Placer {
+  constructor() { this.taken = []; }
+
+  /** Rough width of a string at a given size. 0.56em is close enough. */
+  static width(s, size) { return String(s).length * size * 0.56; }
+
+  /** Free if nothing already placed overlaps this rectangle. */
+  fits(r) {
+    for (const t of this.taken) {
+      if (r.x < t.x + t.w && r.x + r.w > t.x && r.y < t.y + t.h && r.y + r.h > t.y) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * candidates: [{ at:[x,y], anchor, dy, size }]. Returns the first that fits,
+   * else the first one offered.
+   */
+  place(text, size, candidates) {
+    const w = Placer.width(text, size);
+    for (const [i, c] of candidates.entries()) {
+      const x = c.anchor === "middle" ? c.at[0] - w / 2
+        : c.anchor === "end" ? c.at[0] - w : c.at[0];
+      const r = { x: x - 3, y: c.at[1] + c.dy - size, w: w + 6, h: size + 4 };
+      if (this.fits(r)) { this.taken.push(r); return { ...c, box: r }; }
+      if (i === candidates.length - 1) { this.taken.push(r); return { ...c, box: r }; }
+    }
+    return candidates[0];
+  }
+}
+
 /** How big a block looks, from the parameters it holds. Log, because the
  *  counts span six orders of magnitude. */
 function bulk(params, max) {
@@ -169,236 +224,231 @@ function layout(g) {
       const t = bulk(nd.params, max);
       const stage = st.get(nd.id);
       const x = stage * COL, y = li * LANE, z = -stage * DROP;
-      const w = 74, d = 26 + t * 26;
+      const w = 92, d = 28 + t * 26;
       const repeat = nd.repeat || 0;
       if (repeat > 4) {
         const h = 52 + t * 40;
-        items.push({ nd, i: 0, x: x - 52, y, z, w, d, h, lane: li });
-        items.push({ nd, i: -1, hidden: repeat - 2, x: x - 6, y, z, w: 40, d, h, lane: li });
-        items.push({ nd, i: repeat - 1, x: x + 26, y, z, w, d, h, lane: li });
+        // Each half is narrower than a plain block: the pair is two blocks
+        // wide and has to fit inside one stage, or the first and last overlap
+        // each other -- which is exactly what happened when blocks were widened.
+        const tw = 76;
+        items.push({ nd, i: 0, x: x - 88, y, z, w: tw, d, h, lane: li });
+        items.push({ nd, i: -1, hidden: repeat - 2, x: x - 20, y, z, w: 40, d, h, lane: li });
+        items.push({ nd, i: repeat - 1, x: x + 20, y, z, w: tw, d, h, lane: li });
       } else {
-        items.push({ nd, i: -1, x, y, z, w, d, h: 18 + t * 46, lane: li });
+        // floor of 30 so even a parameterless block has a face to be
+        // named on -- logits and sampling carry no weights at all
+        items.push({ nd, i: -1, x, y, z, w, d, h: 30 + t * 40, lane: li });
       }
     }
   });
   return items;
 }
 
+/**
+ * Compose the drawing.
+ *
+ * Layering is the whole job here, and it is why this is explicit and named
+ * rather than an accident of loop order. Four layers, always in this sequence:
+ *
+ *   1. connectors   behind everything; they are about what feeds what
+ *   2. residuals    also behind -- a bypass belongs to its block, not on top
+ *   3. solids       back to front by x+y, the painter's order this camera needs
+ *   4. labels       above all of it, because text that anything can cover is
+ *                   text nobody can read
+ *
+ * Two of these used to be decided by where a loop happened to sit, and it cost
+ * real bugs: a residual drawn inside the solid loop was painted over by the
+ * next block along, and captions sat below blocks that were then drawn after
+ * them.
+ */
 export function render(svg, g, onPick) {
   svg.replaceChildren();
   const items = layout(g);
-  const boxes = new Map();          // node id -> the block edges should leave from
+
+  // which block a connection should leave from / arrive at
+  const anchor = new Map();
   for (const it of items) {
     if (it.nd.repeat) {
-      if (it.i === it.nd.repeat - 1 || !boxes.has(it.nd.id)) boxes.set(it.nd.id, it);
-    } else boxes.set(it.nd.id, it);
+      if (it.i === it.nd.repeat - 1 || !anchor.has(it.nd.id)) anchor.set(it.nd.id, it);
+    } else anchor.set(it.nd.id, it);
   }
 
-  // ---- one root group; pan/zoom only ever touches this ----
   const root = el("g", {});
   svg.append(root);
-
-  // ---- bounds first, so the viewBox fits the drawing with no scrolling ----
-  const bb = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
-  const add = (x, y) => {
-    bb.x0 = Math.min(bb.x0, x); bb.x1 = Math.max(bb.x1, x);
-    bb.y0 = Math.min(bb.y0, y); bb.y1 = Math.max(bb.y1, y);
-  };
-  for (const it of items) {
-    for (const p of [iso(it.x, it.y, it.z), iso(it.x + it.w, it.y + it.d, it.z + it.h),
-      iso(it.x, it.y + it.d, it.z), iso(it.x + it.w, it.y, it.z)]) add(p[0], p[1]);
-    const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d, 0);
-    add(cx - 60, cy + 30); add(cx + 60, cy + 30);     // room for the caption
-    add(cx - 60, cy - 14); add(cx + 60, cy - 14);
+  const L = {};
+  // residual after solid: it runs along the block's own base, so a solid
+  // drawn over it hid all but the stub that poked out past the edge
+  for (const name of ["wire", "solid", "residual", "label"]) {
+    L[name] = el("g", { class: `layer-${name}` });
+    root.append(L[name]);
   }
-  // The viewBox is set at the very end, not here: the group and branch
-  // captions also reserve room, and they are placed further down. Setting it
-  // now meant "LANGUAGE STACK" was clipped to "GUAGE STACK".
-  const pad = 46;
-  const setView = () => svg.setAttribute("viewBox",
-    `${(bb.x0 - pad).toFixed(0)} ${(bb.y0 - pad).toFixed(0)} ` +
-    `${(bb.x1 - bb.x0 + pad * 2).toFixed(0)} ${(bb.y1 - bb.y0 + pad * 2).toFixed(0)}`);
 
-  // No ground plate. The plate in the workbench is honest there -- those parts
-  // physically sit on a host -- but a flat plane contradicts the one thing
-  // altitude is now for: the pipeline descending through space. Blocks at
-  // stage 6 sank straight through it.
-  // ---- arrows ----
-  // Two rules, both of which the first attempt broke:
-  //  - every turn is a right angle. The old path ended `L p1.x p1.y` from a
-  //    mid point whose y had been nudged by -10, so the last leg came out as a
-  //    diagonal, which is what made these look like scribble rather than wiring.
-  //  - where the route bends, it bends once. A straight run between two blocks
-  //    at the same height stays a straight line.
+  const bb = new Bounds();
+  const keep = (p, r = 0) => bb.addP(p, r);
+
+  for (const it of items) bb.addBox(it.x, it.y, it.z, it.w, it.d, it.h);
+
+  // ---- 1. connectors ----
   for (const e of g.edges) {
-    const a = boxes.get(e.from), b = boxes.get(e.to);
+    const a = anchor.get(e.from), b = anchor.get(e.to);
     if (!a || !b) continue;
-    // join the blocks at half height, so an arrow meets a face rather than
-    // skimming along the plate underneath
-    const p0 = a.nd.plate
-      ? iso(a.x + 57, a.y - 2, a.z + 11)
-      : iso(a.x + a.w, a.y + a.d / 2, a.z + a.h / 2);
+    // join at half height so a wire meets a face rather than skimming the floor
+    const p0 = iso(a.x + a.w, a.y + a.d / 2, a.z + a.h / 2);
     const p1 = iso(b.x, b.y + b.d / 2, b.z + b.h / 2);
-    const tip = [p1[0] - 9, p1[1]];
-    let d;
-    if (Math.abs(p0[1] - p1[1]) < 1.5) {
-      d = `M ${p0[0]} ${p0[1]} L ${tip[0]} ${tip[1]}`;
-    } else {
-      const mx = (p0[0] + tip[0]) / 2;
-      d = `M ${p0[0]} ${p0[1]} L ${mx} ${p0[1]} L ${mx} ${tip[1]} L ${tip[0]} ${tip[1]}`;
-    }
-    root.append(el("path", { class: "edge", d, "marker-end": "url(#head)" }));
-    // vecArrow writes the tensor it carries along the arrow's underside rather
-    // than beside it; same reason, so the two diagrams read alike.
-    if (e.shape) {
-      const mid = p0[0] < tip[0] ? [(p0[0] + tip[0]) / 2, p0[1]]
-        : [(tip[0] + p0[0]) / 2, tip[1]];
-      root.append(txt(mid[0], mid[1] + 13, e.shape.join("×"),
-        { class: "shape", "text-anchor": "middle" }));
-    }
+    wire(L.wire, { p0, p1, shape: e.shape || null });
   }
 
-  // ---- blocks, back lane first (painter's algorithm: x+y is nearer) ----
-  const sorted = items.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y));
-  for (const it of sorted) {
-    const nd = it.nd;
-    const color = KINDS[nd.kind] || KINDS.tensor;
-    if (it.i === -1 && nd.repeat) {                 // the elision marker
-      const p0 = iso(it.x + 4, it.y + it.d / 2, it.h / 2);
-      const p1 = iso(it.x + it.w - 4, it.y + it.d / 2, it.h / 2);
-      root.append(el("line", { class: "gap", x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }));
-      const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d * 0.78, it.z + it.h);
-      root.append(txt(cx, cy - 4, `×${it.hidden}`, {
-        class: "gap-n", "text-anchor": "middle",
-      }));
-      continue;
-    }
-
-    const { x, y, z, w, d, h } = it;
-    const x1 = x + w, y1 = y + d, z1 = z + h;
-    if (nd.plate) { drawPlate(root, nd, it, onPick); }
-    const gEl = el("g", { class: "node", tabindex: "0", role: "button",
-      "aria-label": nd.label });
-    if (!nd.plate) {
-
-    // The residual, drawn first so the slabs sit on top of it. Its input and
-    // output are at the same altitude by construction, so it is one straight
-    // line with no bend at all -- which is the whole reason the blocks are
-    // separated in height.
-    if (nd.repeat) {
-      const a0 = iso(x - 16, y + d / 2, z);
-      const a1 = iso(x1 + 18, y + d / 2, z);
-      root.append(el("path", { class: "residual",
-        d: `M ${a0[0]} ${a0[1]} L ${a1[0]} ${a1[1]}` }));
-      // the add, drawn as the operator it is: a disc on the wire, the way
-      // \elementsum puts a green circle with a + mid-connection
-      const sum = iso(x1 + 18, y + d / 2, z);
-      root.append(el("circle", { class: "sum", cx: sum[0], cy: sum[1], r: 7 }));
-      root.append(txt(sum[0], sum[1] + 4, "+", {
-        class: "sum-t", "text-anchor": "middle" }));
-    }
-    const shell = (bx, by, bz, bw, bd, bh, c) => {
-      const bx1 = bx + bw, by1 = by + bd, bz1 = bz + bh;
-      gEl.append(el("polygon", {
-        points: poly([iso(bx, by1, bz), iso(bx, by1, bz1), iso(bx1, by1, bz1), iso(bx1, by1, bz)]),
-        fill: c, "fill-opacity": 0.22, stroke: INK, "stroke-width": 0.8,
-      }));
-      gEl.append(el("polygon", {
-        points: poly([iso(bx1, by, bz), iso(bx1, by, bz1), iso(bx1, by1, bz1), iso(bx1, by1, bz)]),
-        fill: c, "fill-opacity": 0.14, stroke: INK, "stroke-width": 0.8,
-      }));
-      gEl.append(el("polygon", {
-        points: poly([iso(bx, by, bz1), iso(bx1, by, bz1), iso(bx1, by1, bz1), iso(bx, by1, bz1)]),
-        fill: "#ffffff", "fill-opacity": 0.62, stroke: INK, "stroke-width": 0.8,
-      }));
-    };
-    if (nd.template?.length) {
-      for (const sl of slabPlan(nd, h)) {
-        shell(x, y, z + sl.dz, w, d, sl.h, KINDS[sl.sub.kind] || KINDS.tensor);
-      }
-    } else {
-      shell(x, y, z, w, d, h, color);
-    }
-    }
-    const act = () => onPick && onPick(nd, it);
-    gEl.addEventListener("click", act);
-    gEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter") act(); });
-    root.append(gEl);
-
-    // caption under the front face; the block's own height already says how
-    // much it weighs, so the caption carries only what height cannot
-    const [cx, cy] = iso(x + w / 2, y + d, z);
-    const above = it.lane === 0;
-    if (!nd.repeat && !nd.plate) {
-      // Dimensions labelled the way Box.sty does it: each number on the edge
-      // it measures -- width under the front-bottom edge, height up the left
-      // edge, depth sloped along the edge that recedes. Three numbers on three
-      // axes, rather than a list floating beside the block.
-      const wLab = nd.dims && (nd.dims.width || nd.dims.out);
-      if (wLab) {
-        const p = iso(x, y + d, z), q = iso(x + w, y + d, z);
-        root.append(txt((p[0] + q[0]) / 2, (p[1] + q[1]) / 2 + 12, String(wLab),
-          { class: "dim", "text-anchor": "middle" }));
-      }
-      // Only real, declared quantities go on an edge. This used to print the
-      // block's own height and depth in world units -- numbers like "42" that
-      // read as dimensions but are just where the layout happened to put it.
-      if (nd.params) {
-        const p = iso(x, y + d / 2, z), q = iso(x, y + d / 2, z + h);
-        root.append(txt(p[0] - 7, (p[1] + q[1]) / 2 + 3, `${fmt(nd.params)} params`,
-          { class: "dim", "text-anchor": "end" }));
-      }
-      const dLab = nd.dims && (nd.dims.vocab || nd.dims.patch);
-      if (dLab) {
-        const rp = iso(x + w, y + d, z), rq = iso(x + w, y, z);
-        const mx = (rp[0] + rq[0]) / 2 + 12, my = (rp[1] + rq[1]) / 2 + 4;
-        root.append(txt(mx, my, String(dLab), {
-          class: "dim", "text-anchor": "middle", transform: `rotate(-30 ${mx} ${my})`,
-        }));
-      }
-      // caption on the face itself, where Box.sty puts it
-      const room = Math.max(6, Math.floor(w / 3.1));
-      const title = nd.label.length > room ? nd.label.slice(0, room - 1) + "…" : nd.label;
-      const [tx, ty] = above ? iso(x + w / 2, y, z + h) : iso(x + w / 2, y + d + 18, z);
-      root.append(txt(tx, ty + (above ? -10 : 4), title,
-        { class: "cap", "text-anchor": "middle" }));
-    }
-  }
-
-  // ---- one caption per repeated group, over the pair rather than each half ----
+  // ---- 2. residuals ----
+  // one per repeated group, not per drawn half: the bypass belongs to the run.
   for (const nd of g.nodes) {
     if (!nd.repeat || nd.repeat <= 4) continue;
     const own = items.filter((i) => i.nd.id === nd.id);
-    const x0 = Math.min(...own.map((i) => i.x));
-    const x1 = Math.max(...own.map((i) => i.x + i.w));
-    const back = own[0].y;
-    const above = own[0].lane === 0;
-    const at = above ? iso((x0 + x1) / 2, back, own[0].z + own[0].h)
-      : iso((x0 + x1) / 2, own[0].y + own[0].d + 46, own[0].z);
-    // clear of the xN marker, which sits on the top face at the same height
-    const dy = above ? -72 : 16;
-    root.append(txt(at[0], at[1] + dy, `${nd.label}`,
-      { class: "cap", "text-anchor": "middle" }));
-    root.append(txt(at[0], at[1] + dy + 12,
-      `${fmt(nd.params / nd.repeat)} each · ${fmt(nd.params)} total`,
-      { class: "cap-sub", "text-anchor": "middle" }));
-    add(at[0] - 100, at[1] + dy - 12); add(at[0] + 100, at[1] + dy + 24);
+    const last = own[own.length - 1];
+    residual(L.residual, { x: last.x, y: last.y, z: last.z, w: last.w, d: last.d });
   }
 
-  // ---- branch captions, above the back lane, left of the front one ----
+  // Dimensions are shown on demand rather than always.
+  //
+  // This was the densest thing in the drawing: a width on the front edge, a
+  // parameter count up the left edge and a depth sloped along the receding
+  // edge, for twelve blocks. They overprinted each other, the blocks and the
+  // wires, and none could be read. Hovering a block, or selecting one, shows
+  // its three; the panel always has the full set.
+  const dimsLayer = el("g", { class: "layer-dims" });
+  L.label.append(dimsLayer);
+  const showDims = (gEl, it, on) => {
+    if (!it || it.nd.repeat || it.nd.plate) return;
+    const dims = it.nd.dims || {};
+    const width = dims.width || dims.out;
+    if (!width && !it.nd.params) return;
+    let box = gEl.__dims;
+    if (!box) {
+      box = el("g", { class: "dims", style: "display:none" });
+      dimsLayer.append(box);
+      gEl.__dims = box;
+      edges(box, {
+        x: it.x, y: it.y, z: it.z, w: it.w, d: it.d, h: it.h,
+        width: width || "", params: it.nd.params ? fmt(it.nd.params) : "",
+        depth: dims.vocab || dims.patch || null,
+      });
+    }
+    box.style.display = on ? "" : "none";
+  };
+
+  // ---- 3. solids, back to front ----
+  const sorted = items.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y));
+  for (const it of sorted) {
+    const nd = it.nd;
+    const { x, y, z, w, d, h } = it;
+
+    if (nd.repeat && it.i === -1) {
+      gapMark(L.solid, { x: x + w / 2, y, z, w, d, h, hidden: it.hidden });
+      continue;
+    }
+
+    const gEl = el("g", { class: "node", tabindex: "0", role: "button",
+      "aria-label": nd.label });
+
+    if (nd.plate) {
+      plate(gEl, { ...nd.plate, x, y, z,
+        label: `${nd.label} — one sheet per ${nd.plate.unit}` });
+    } else if (nd.template?.length) {
+      tower(gEl, {
+        x, y, z, w, d, h,
+        parts: nd.template.map((q) => q.label),
+        weights: nd.template.map((q) => q.params || 1),
+        kinds: nd.template.map((q) => q.kind),
+      });
+    } else {
+      box(gEl, { x, y, z, w, d, h, color: KINDS[nd.kind] || KINDS.tensor });
+    }
+
+    const act = () => onPick && onPick(nd, it);
+    gEl.addEventListener("click", act);
+    gEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter") act(); });
+    gEl.addEventListener("mouseenter", () => showDims(gEl, it, true));
+    gEl.addEventListener("mouseleave", () => showDims(gEl, it, false));
+    gEl.addEventListener("focus", () => showDims(gEl, it, true));
+    gEl.addEventListener("blur", () => showDims(gEl, it, false));
+    L.solid.append(gEl);
+  }
+
+  // ---- 4. labels ----
+  //
+  // Captions go *on the block's own face*, not beside it.
+  //
+  // Every other arrangement was tried and each one collided, because the blocks
+  // sit on a diagonal with no free space beside any of them: place below and
+  // you land on the next lane's block, place beside and you land on this one's
+  // own face. A caption inside its own block cannot collide with anything,
+  // because the only thing that can cover it is that block, drawn earlier.
+  //
+  // It is also what the reference does -- `\\node at (\\x/2, 0, \\z/2) {\\caption}`.
+  const labels = el("g", { class: "layer-text" });
+  L.label.append(labels);
+
+  /** Shorten to what actually fits across a face. */
+  const fit = (s2, px, size) => {
+    const room = Math.max(4, Math.floor(px / (size * 0.56)));
+    if (s2.length <= room) return s2;
+    // cut at the last space that fits: "Patch embed\u2026" reads as an
+    // abbreviation, "Patch embeddi\u2026" reads as a typo
+    const cut = s2.slice(0, room);
+    const sp = cut.lastIndexOf(" ");
+    return (sp > room * 0.5 ? cut.slice(0, sp) : cut) + "\u2026";
+  };
+
+  for (const it of items) {
+    const nd = it.nd;
+    if (nd.repeat || nd.plate) continue;          // those label themselves
+    const { x, y, z, w, d, h } = it;
+    if (h < 26) continue;                         // no room for a face caption
+    // the baseline sits above the text's own centre, so nudge down
+    const at = iso(x + w / 2, y + d, z + h * 0.5 - 4);
+    labels.append(txt(at[0], at[1], fit(nd.label, w, 11), {
+      class: "face-cap", "text-anchor": "middle",
+    }));
+    if (h >= 44) {
+      labels.append(txt(at[0], at[1] + 13, fmt(nd.params || 0), {
+        class: "face-sub", "text-anchor": "middle",
+      }));
+    }
+  }
+
+  // one caption per repeated group, on the face of its last block
+  for (const nd of g.nodes) {
+    if (!nd.repeat || nd.repeat <= 4) continue;
+    const own = items.filter((i) => i.nd.id === nd.id);
+    const last = own[own.length - 1];
+    const at = iso(last.x + last.w / 2, last.y + last.d, last.z + last.h * 0.5 - 4);
+    labels.append(txt(at[0], at[1], fit(`${nd.label}`, last.w, 11), {
+      class: "face-cap", "text-anchor": "middle",
+    }));
+    labels.append(txt(at[0], at[1] + 13,
+      `${fmt(nd.params / nd.repeat)} each \u00d7 ${nd.repeat}`, {
+        class: "face-sub", "text-anchor": "middle",
+      }));
+
+  }
+
+  // branch captions: the only text that needs free space, and there is some,
+  // out past the start of each lane
   for (const [name, title] of [["vision", "vision branch"], ["text", "language stack"]]) {
     const own = items.filter((i) => (i.nd.branch || "text") === name);
     if (!own.length) continue;
     const back = Math.min(...own.map((i) => i.y));
     const x0 = Math.min(...own.map((i) => i.x));
-    const x1 = Math.max(...own.map((i) => i.x + i.w));
-    const at = iso(x0 - 14, back + 34, 0);
-    root.append(txt(at[0], at[1], title.toUpperCase(),
+    const at = iso(x0 - 26, back, 0);
+    labels.append(txt(at[0], at[1], title.toUpperCase(),
       { class: "branch", "text-anchor": "end" }));
-    add(at[0] - 150, at[1] - 12); add(at[0] + 6, at[1] + 12);
+    keep(at, 90);
   }
 
-  setView();
+  // The viewBox is set last, after every layer has reserved its room. Setting
+  // it earlier meant "LANGUAGE STACK" clipped to "GUAGE STACK", because the
+  // bounds added after that point were thrown away.
+  svg.setAttribute("viewBox", bb.viewBox(46));
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
   installPanZoom(svg, root);
   return { head: describe(g) };

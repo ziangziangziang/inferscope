@@ -65,7 +65,7 @@ export function build(cfg) {
       note: "the integers the model reads",
     },
     {
-      id: "embed", label: "Token embedding", kind: "embed", params: embed, branch: "text",
+      id: "embed", label: "Token embed", kind: "embed", params: embed, branch: "text",
       dims: { vocab: vocab || "?", width: hidden },
       note: COMMON.tokenEmbedding + (tied ? " " + COMMON.tiedHead : ""),
     },
@@ -111,7 +111,7 @@ export function build(cfg) {
           note: `each sheet is one ${vis.patch}px patch` },
         note: vis.note,
       },
-      { id: "patch", label: "Patch embedding", kind: "embed", params: vis.merge,
+      { id: "patch", label: "Patch embed", kind: "embed", params: vis.merge,
         branch: "vision", dims: { width: vis.hidden } },
       { id: "vblocks", label: `Vision block ×${vis.layers}`, kind: "stack",
         params: vis.blocks, branch: "vision", repeat: vis.layers,
