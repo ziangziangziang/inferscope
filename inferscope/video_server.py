@@ -40,29 +40,37 @@ def create_app(model: str) -> FastAPI:
 
     @app.on_event("startup")
     def load() -> None:
-        # Three ways this can arrive: a diffusers auto class (renamed on the
-        # way to 1.0), a single architecture class, or a *modular* pipeline,
-        # where the checkpoint ships modular_model_index.json and diffusers
-        # composes the blocks itself.
-        pipe_cls = None
-        try:
-            from diffusers import AutoPipelineForText2Video as pipe_cls  # type: ignore
-        except ImportError:
-            pass
-        if pipe_cls is None:
-            for name in ("MiniMaxH3ModularPipeline", "WanPipeline"):
-                try:
-                    pipe_cls = getattr(__import__("diffusers"), name)
-                    break
-                except AttributeError:
-                    continue
-        if pipe_cls is None:
-            state["error"] = "no text-to-video pipeline in this diffusers"
-            return
         path = find_model(model)
         if path is None:
             state["error"] = (f"no text-to-video pipeline at {model} "
                               "(expected a directory with model_index.json)")
+            return
+
+        # Take the class from the checkpoint's own index rather than guessing.
+        # Guessing is how Wan ended up being loaded with the modular H3 class,
+        # which cannot resolve its blocks and fails with an error that says
+        # nothing about the real cause.
+        import diffusers
+        import json as _json
+        named = None
+        for index in ("modular_model_index.json", "model_index.json"):
+            try:
+                named = _json.loads((path / index).read_text()).get("_class_name")
+            except (OSError, ValueError):
+                continue
+            if named:
+                break
+        pipe_cls = getattr(diffusers, str(named), None) if named else None
+        if pipe_cls is None:
+            # No usable name in the checkpoint: fall back to diffusers' own
+            # auto-detection, and only then to the modular class.
+            for name in ("AutoPipelineForText2Video", "DiffusionPipeline",
+                         "MiniMaxH3ModularPipeline"):
+                pipe_cls = getattr(diffusers, name, None)
+                if pipe_cls is not None:
+                    break
+        if pipe_cls is None:
+            state["error"] = "no text-to-video pipeline in this diffusers"
             return
         try:
             dev = "cuda" if torch.cuda.is_available() else "cpu"
