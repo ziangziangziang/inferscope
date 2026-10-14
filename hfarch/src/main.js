@@ -1,4 +1,4 @@
-import { getModel, fmt } from "./hub.js";
+import { age, cacheGet, cachePut, fmt, getModel, recent } from "./hub.js";
 import { build } from "./graph.js";
 import { render } from "./render.js";
 
@@ -71,30 +71,37 @@ function show(node) {
 
 let last = null;
 
+function fillRecent() {
+  const list = recent();
+  $("recent").replaceChildren(...list.map((r) => {
+    const o = document.createElement("option");
+    o.value = r;
+    return o;
+  }));
+  $("drops").textContent = list.length
+    ? `${list.length} saved locally` : "";
+}
+
 async function load(repo) {
   hint.hidden = true;
   err.hidden = true;
   step = 0;
   const STEPS = ["config.json", "build graph", "draw"];
+
+  // Already drawn here before: the shape cannot have changed, so skip the
+  // network entirely. This is the difference between instant and a wait that
+  // can run past half a minute on a sandboxed network.
+  const hit = cacheGet(repo);
+  if (hit && hit.files && hit.files["config.json"]) {
+    status("working", `${repo} from cache`, STEPS, "");
+    draw(hit.files["config.json"], repo, hit.host, `cached ${age(hit.at)}`);
+    return;
+  }
   status("working", `reading ${repo}`, STEPS, "");
   try {
     const r = await getModel(repo);
-    step = 1;
-    status("working", `read ${repo}`, STEPS, `via ${r.host.replace("https://", "")} · ${elapsed()}`);
-    const g = build(r.files["config.json"]);
-    step = 2;
-    const blocks = g.nodes.length + g.nodes.filter((n) => (n.repeat || 0) > 4).length;
-    status("working", "drawing", STEPS, `${blocks} components · ${elapsed()}`);
-    last = g;
-    $("src").textContent = `${r.host.replace("https://", "")} · config.json only`;
-    const { head } = render(svg, g, (nd) => show(nd));
-    $("sum").textContent = head;
-    side.hidden = true;
-    const named = g.nodes.filter((n) => n.repeat).map((n) => `${n.repeat}×`);
-    status("ready", `${repo} drawn`,
-      [],
-      `<b>${g.nodes.length}</b> components${named.length ? ` · ${named.join(" · ")}` : ""}`
-      + ` · <b>${elapsed()}</b>`);
+    cachePut(repo, r.files, r.host);
+    draw(r.files["config.json"], repo, r.host, `via ${r.host.replace("https://", "")}`);
   } catch (e) {
     step = -1;
     hint.hidden = false;
@@ -103,12 +110,33 @@ async function load(repo) {
   }
 }
 
+function draw(cfg, repo, host, how) {
+  const STEPS = ["config.json", "build graph", "draw"];
+  step = 1;
+  status("working", `read ${repo}`, STEPS, `${how} · ${elapsed()}`);
+  const g = build(cfg);
+  step = 2;
+  status("working", "drawing", STEPS, `${g.nodes.length} components · ${elapsed()}`);
+  last = g;
+  $("src").textContent = `${(host || "").replace("https://", "")} · config.json only`;
+  const { head } = render(svg, g, (nd) => show(nd));
+  $("sum").textContent = head;
+  side.hidden = true;
+  const named = g.nodes.filter((n) => n.repeat).map((n) => `${n.repeat}×`);
+  status("ready", `${repo} drawn`, [],
+    `<b>${g.nodes.length}</b> components${named.length ? ` · ${named.join(" · ")}` : ""}`
+    + ` · ${how} · <b>${elapsed()}</b>`);
+  fillRecent();
+}
+
 $("go").addEventListener("submit", (e) => {
   e.preventDefault();
   const v = $("repo").value.trim();
   if (v) history.replaceState(null, "", "#" + v), load(v);
 });
 $("close").addEventListener("click", () => { side.hidden = true; });
+
+fillRecent();
 
 const initial = decodeURIComponent(location.hash.slice(1));
 if (initial) { $("repo").value = initial; load(initial); }

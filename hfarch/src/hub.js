@@ -94,6 +94,68 @@ export async function getModel(repo) {
   throw new Error(`${repo}: ${hostErr ? hostErr.message : "could not be read"}`);
 }
 
+/* ------------------------------------------------------------------ *
+ * A cache of configs already read.
+ *
+ * A model's shape does not change, so re-reading config.json for a repo
+ * this browser has already seen buys nothing but a wait -- and the wait
+ * is not short, because an unreachable Hub costs a full timeout per
+ * host before the origin fallback. Cached reads are instant.
+ * ------------------------------------------------------------------ */
+const KEY = "hfarch.configs.v1";
+const LIMIT = 24;
+
+export function cacheGet(repo) {
+  try {
+    const all = JSON.parse(localStorage.getItem(KEY) || "{}");
+    const hit = all[repo];
+    if (!hit) return null;
+    return hit;                       // {files, host, at}
+  } catch {
+    return null;                      // private mode, quota, or corrupt JSON
+  }
+}
+
+export function cachePut(repo, files, host) {
+  try {
+    const all = JSON.parse(localStorage.getItem(KEY) || "{}");
+    all[repo] = { files, host, at: Date.now() };
+    // keep the most recent, drop the rest
+    const keep = Object.entries(all)
+      .sort((a, b) => b[1].at - a[1].at).slice(0, LIMIT);
+    localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(keep)));
+    return true;
+  } catch {
+    return false;                     // over quota: the cache is optional
+  }
+}
+
+/** Repos this browser has drawn, newest first. */
+export function recent() {
+  try {
+    const all = JSON.parse(localStorage.getItem(KEY) || "{}");
+    return Object.entries(all).sort((a, b) => b[1].at - a[1].at).map(([k]) => k);
+  } catch {
+    return [];
+  }
+}
+
+export function forget(repo) {
+  try {
+    const all = JSON.parse(localStorage.getItem(KEY) || "{}");
+    delete all[repo];
+    localStorage.setItem(KEY, JSON.stringify(all));
+  } catch { /* nothing to do */ }
+}
+
+export const age = (ms) => {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+};
+
 export const fmt = (v) => {
   if (v == null) return "—";
   const a = Math.abs(v);

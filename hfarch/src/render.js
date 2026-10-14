@@ -207,6 +207,14 @@ export function render(svg, g, onPick) {
       d = `M ${p0[0]} ${p0[1]} L ${mx} ${p0[1]} L ${mx} ${tip[1]} L ${tip[0]} ${tip[1]}`;
     }
     root.append(el("path", { class: "edge", d, "marker-end": "url(#head)" }));
+    // vecArrow writes the tensor it carries along the arrow's underside rather
+    // than beside it; same reason, so the two diagrams read alike.
+    if (e.shape) {
+      const mid = p0[0] < tip[0] ? [(p0[0] + tip[0]) / 2, p0[1]]
+        : [(tip[0] + p0[0]) / 2, tip[1]];
+      root.append(txt(mid[0], mid[1] + 13, e.shape.join("×"),
+        { class: "shape", "text-anchor": "middle" }));
+    }
   }
 
   // ---- blocks, back lane first (painter's algorithm: x+y is nearer) ----
@@ -235,10 +243,16 @@ export function render(svg, g, onPick) {
     // line with no bend at all -- which is the whole reason the blocks are
     // separated in height.
     if (nd.repeat) {
-      const a0 = iso(x - 14, y + d / 2, z);
-      const a1 = iso(x1 + 16, y + d / 2, z);
+      const a0 = iso(x - 16, y + d / 2, z);
+      const a1 = iso(x1 + 18, y + d / 2, z);
       root.append(el("path", { class: "residual",
-        d: `M ${a0[0]} ${a0[1]} L ${a1[0]} ${a1[1]}`, "marker-end": "url(#head)" }));
+        d: `M ${a0[0]} ${a0[1]} L ${a1[0]} ${a1[1]}` }));
+      // the add, drawn as the operator it is: a disc on the wire, the way
+      // \elementsum puts a green circle with a + mid-connection
+      const sum = iso(x1 + 18, y + d / 2, z);
+      root.append(el("circle", { class: "sum", cx: sum[0], cy: sum[1], r: 7 }));
+      root.append(txt(sum[0], sum[1] + 4, "+", {
+        class: "sum-t", "text-anchor": "middle" }));
     }
     const shell = (bx, by, bz, bw, bd, bh, c) => {
       const bx1 = bx + bw, by1 = by + bd, bz1 = bz + bh;
@@ -270,14 +284,37 @@ export function render(svg, g, onPick) {
     // caption under the front face; the block's own height already says how
     // much it weighs, so the caption carries only what height cannot
     const [cx, cy] = iso(x + w / 2, y + d, z);
+    const above = it.lane === 0;
     if (!nd.repeat) {
+      // Dimensions labelled the way Box.sty does it: each number on the edge
+      // it measures -- width under the front-bottom edge, height up the left
+      // edge, depth sloped along the edge that recedes. Three numbers on three
+      // axes, rather than a list floating beside the block.
+      const wLab = nd.dims && (nd.dims.width || nd.dims.out);
+      if (wLab) {
+        const p = iso(x, y + d, z), q = iso(x + w, y + d, z);
+        root.append(txt((p[0] + q[0]) / 2, (p[1] + q[1]) / 2 + 12, String(wLab),
+          { class: "dim", "text-anchor": "middle" }));
+      }
+      // Only real, declared quantities go on an edge. This used to print the
+      // block's own height and depth in world units -- numbers like "42" that
+      // read as dimensions but are just where the layout happened to put it.
+      if (nd.params) {
+        const p = iso(x, y + d / 2, z), q = iso(x, y + d / 2, z + h);
+        root.append(txt(p[0] - 7, (p[1] + q[1]) / 2 + 3, `${fmt(nd.params)} params`,
+          { class: "dim", "text-anchor": "end" }));
+      }
+      const dLab = nd.dims && (nd.dims.vocab || nd.dims.patch);
+      if (dLab) {
+        const rp = iso(x + w, y + d, z), rq = iso(x + w, y, z);
+        const mx = (rp[0] + rq[0]) / 2 + 12, my = (rp[1] + rq[1]) / 2 + 4;
+        root.append(txt(mx, my, String(dLab), {
+          class: "dim", "text-anchor": "middle", transform: `rotate(-30 ${mx} ${my})`,
+        }));
+      }
+      // caption on the face itself, where Box.sty puts it
       const room = Math.max(6, Math.floor(w / 3.1));
       const title = nd.label.length > room ? nd.label.slice(0, room - 1) + "…" : nd.label;
-      // Below the front face is where the *next* lane's blocks are, so the back
-      // lane's captions go above instead. Same reason the main app does this.
-      const above = it.lane === 0;
-      // a caption is wider than its block, so the front one is pushed off the
-      // face rather than laid across it
       const [tx, ty] = above ? iso(x + w / 2, y, z + h) : iso(x + w / 2, y + d + 18, z);
       root.append(txt(tx, ty + (above ? -10 : 4), title,
         { class: "cap", "text-anchor": "middle" }));

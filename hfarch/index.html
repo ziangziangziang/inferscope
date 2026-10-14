@@ -11,9 +11,11 @@
   <div class="brand">MODEL<b>ATLAS</b></div>
   <form id="go" class="ask">
     <input id="repo" placeholder="Qwen/Qwen3-4B" spellcheck="false"
-           autocomplete="off" aria-label="Hugging Face model name">
+           list="recent" autocomplete="off" aria-label="Hugging Face model name">
+    <datalist id="recent"></datalist>
     <button type="submit">draw</button>
   </form>
+  <span class="drops" id="drops"></span>
   <div class="src"><div id="src">reads config.json — no weights downloaded</div><div id="sum" class="sum"></div></div>
 </header>
 
