@@ -1,0 +1,43 @@
+#!/bin/bash
+cd /workspace/inferscope
+# the Hub is unreachable from this network without the cluster egress proxy
+export HTTPS_PROXY=http://notebook-egress-proxy.amd-oneclick-lablab.svc.cluster.local:3128
+export HTTP_PROXY=$HTTPS_PROXY
+export INFERSCOPE_CHAT_MANAGE=1
+export INFERSCOPE_CHAT_MODEL=/workspace/models/unsloth_Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
+export INFERSCOPE_CHAT_SERVER_BIN=/workspace/build/llama.cpp/build-hip/bin/llama-server
+export INFERSCOPE_CHAT_PORT=8081
+export INFERSCOPE_CAPTURE_MAX_S=20
+
+# Keep the public tunnel alive. The frpc client loses its broker credentials
+# every ~30-60 min, stranding the hostname on frp's 404 page even though the
+# app is healthy on loopback. The watchdog is idempotent (flock), so starting
+# it on every boot is safe.
+if ! pgrep -f "tunnel-watchdog[.]sh" > /dev/null; then
+  (setsid nohup /workspace/inferscope/tunnel-watchdog.sh > /dev/null 2>&1 &)
+  sleep 1
+fi
+
+
+# piper speech: a library wrapped in bin/piper-server so enginectl can treat it
+# like any other engine (own port, own /health, offloadable).
+export INFERSCOPE_TTS_BIN=/workspace/inferscope/bin/piper-server
+export INFERSCOPE_TTS_MODELS_DIR=/workspace/models/tts
+export INFERSCOPE_TTS_MODEL=/workspace/models/tts
+export INFERSCOPE_TTS_VOICE=en_US-lessac-medium
+
+
+# diffusers image generation, same wrapper contract as piper.
+export INFERSCOPE_IMAGE_BIN=/workspace/inferscope/bin/diffusers-server
+export INFERSCOPE_IMAGE_MODELS_DIR=/workspace/models/image
+export INFERSCOPE_IMAGE_MODEL=/workspace/models/image/sd-turbo
+
+
+# Video generation. The weights are ~27GB and live on the container's root
+# filesystem rather than /workspace, which is smaller; that filesystem is not
+# persistent, so `bin/fetch-video-model` puts them back after a restart.
+export INFERSCOPE_VIDEO_BIN=/workspace/inferscope/bin/diffusers-video-server
+export INFERSCOPE_VIDEO_MODELS_DIR=/models/video
+export INFERSCOPE_VIDEO_MODEL=/models/video/wan2.1-t2v-1.3b
+
+exec /opt/venv/bin/python -m inferscope serve
