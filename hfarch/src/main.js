@@ -3,6 +3,23 @@ import { build } from "./graph.js";
 import { render } from "./render.js";
 
 const $ = (id) => document.getElementById(id);
+
+/**
+ * The status bar says what is happening, because the wait is not short: the
+ * first fetch to an unreachable host costs a full timeout before the mirror is
+ * even tried, and with nothing on screen that reads as a broken page rather
+ * than a slow one.
+ */
+const t0 = performance.now();
+let step = 0;
+function status(state, what, steps = [], meta = "") {
+  $("status").dataset.state = state;
+  $("stWhat").textContent = what;
+  $("stSteps").textContent = steps.map((s, i) =>
+    `${s} ${i < step ? "✓" : i === step ? "…" : "·"}`).join("  ");
+  $("stMeta").innerHTML = meta;
+}
+const elapsed = () => `${Math.round(performance.now() - t0)} ms`;
 const svg = $("svg"), err = $("err"), side = $("side"), detail = $("detail"), hint = $("hint");
 
 // the arrowhead the renderer points at
@@ -56,16 +73,32 @@ let last = null;
 
 async function load(repo) {
   hint.hidden = true;
+  err.hidden = true;
+  step = 0;
+  const STEPS = ["config.json", "build graph", "draw"];
+  status("working", `reading ${repo}`, STEPS, "");
   try {
     const r = await getModel(repo);
+    step = 1;
+    status("working", `read ${repo}`, STEPS, `via ${r.host.replace("https://", "")} · ${elapsed()}`);
     const g = build(r.files["config.json"]);
+    step = 2;
+    const blocks = g.nodes.length + g.nodes.filter((n) => (n.repeat || 0) > 4).length;
+    status("working", "drawing", STEPS, `${blocks} components · ${elapsed()}`);
     last = g;
     $("src").textContent = `${r.host.replace("https://", "")} · config.json only`;
     const { head } = render(svg, g, (nd) => show(nd));
     $("sum").textContent = head;
     side.hidden = true;
+    const named = g.nodes.filter((n) => n.repeat).map((n) => `${n.repeat}×`);
+    status("ready", `${repo} drawn`,
+      [],
+      `<b>${g.nodes.length}</b> components${named.length ? ` · ${named.join(" · ")}` : ""}`
+      + ` · <b>${elapsed()}</b>`);
   } catch (e) {
+    step = -1;
     hint.hidden = false;
+    status("error", `could not draw ${repo}`, [], `<b>${elapsed()}</b>`);
     fail(e);
   }
 }

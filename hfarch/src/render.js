@@ -43,6 +43,21 @@ const KINDS = {
   moe: "#c99962",
 };
 
+/**
+ * A patch on a block's top face, addressed in face units (u, v) rather than
+ * screen units, so it lies in the block's own perspective. This is what puts a
+ * decoder block's four sub-layers on its lid, the way the main app draws the
+ * cells on its parts.
+ */
+function topPatch(x, y, w, d, z1, u, v, uw, vh) {
+  const p00 = iso(x, y, z1), p10 = iso(x + w, y, z1), p01 = iso(x, y + d, z1);
+  const at = (uu, vv) => [
+    p00[0] + uu * (p10[0] - p00[0]) + vv * (p01[0] - p00[0]),
+    p00[1] + uu * (p10[1] - p00[1]) + vv * (p01[1] - p00[1]),
+  ];
+  return poly([at(u, v), at(u + uw, v), at(u + uw, v + vh), at(u, v + vh)]);
+}
+
 const el = (tag, attrs, kids) => {
   const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
@@ -132,11 +147,13 @@ export function render(svg, g, onPick) {
     add(cx - 60, cy + 30); add(cx + 60, cy + 30);     // room for the caption
     add(cx - 60, cy - 14); add(cx + 60, cy - 14);
   }
+  // The viewBox is set at the very end, not here: the group and branch
+  // captions also reserve room, and they are placed further down. Setting it
+  // now meant "LANGUAGE STACK" was clipped to "GUAGE STACK".
   const pad = 46;
-  svg.setAttribute("viewBox",
+  const setView = () => svg.setAttribute("viewBox",
     `${(bb.x0 - pad).toFixed(0)} ${(bb.y0 - pad).toFixed(0)} ` +
     `${(bb.x1 - bb.x0 + pad * 2).toFixed(0)} ${(bb.y1 - bb.y0 + pad * 2).toFixed(0)}`);
-  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
   // ---- ground ----
   const gx0 = -18, gy0 = -18;
@@ -177,7 +194,7 @@ export function render(svg, g, onPick) {
       const p0 = iso(it.x + 4, it.y + it.d / 2, it.h / 2);
       const p1 = iso(it.x + it.w - 4, it.y + it.d / 2, it.h / 2);
       root.append(el("line", { class: "gap", x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }));
-      const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d / 2, it.h);
+      const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d * 0.86, it.h);
       root.append(txt(cx, cy - 4, `×${it.hidden}`, {
         class: "gap-n", "text-anchor": "middle",
       }));
@@ -200,6 +217,20 @@ export function render(svg, g, onPick) {
       points: poly([iso(x, y, z1), iso(x1, y, z1), iso(x1, y1, z1), iso(x, y1, z1)]),
       fill: "#ffffff", "fill-opacity": 0.62, stroke: INK, "stroke-width": 0.9,
     }));
+    // what is inside one instance, painted on the lid the way the main app
+    // draws the cells on its parts
+    if (nd.template?.length) {
+      const n = nd.template.length;
+      const gap = 0.025;
+      const uw = (1 - gap * (n + 1)) / n;
+      nd.template.forEach((sub, i) => {
+        gEl.append(el("polygon", {
+          points: topPatch(x, y, w, d, z1, gap + i * (uw + gap), 0.14, uw, 0.48),
+          fill: KINDS[sub.kind] || KINDS.tensor, "fill-opacity": 0.8,
+          stroke: INK, "stroke-width": 0.55,
+        }));
+      });
+    }
     const act = () => onPick && onPick(nd, it);
     gEl.addEventListener("click", act);
     gEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter") act(); });
@@ -214,8 +245,10 @@ export function render(svg, g, onPick) {
       // Below the front face is where the *next* lane's blocks are, so the back
       // lane's captions go above instead. Same reason the main app does this.
       const above = it.lane === 0;
-      const [tx, ty] = above ? iso(x + w / 2, y, it.h) : [cx, cy];
-      root.append(txt(tx, ty + (above ? -10 : 14), title,
+      // a caption is wider than its block, so the front one is pushed off the
+      // face rather than laid across it
+      const [tx, ty] = above ? iso(x + w / 2, y, it.h) : iso(x + w / 2, y + d + 18, 0);
+      root.append(txt(tx, ty + (above ? -10 : 4), title,
         { class: "cap", "text-anchor": "middle" }));
     }
   }
@@ -228,9 +261,10 @@ export function render(svg, g, onPick) {
     const x1 = Math.max(...own.map((i) => i.x + i.w));
     const back = own[0].y;
     const above = own[0].lane === 0;
-    const at = above ? iso((x0 + x1) / 2, back, own[0].h) : iso((x0 + x1) / 2, own[0].y + own[0].d, 0);
+    const at = above ? iso((x0 + x1) / 2, back, own[0].h)
+      : iso((x0 + x1) / 2, own[0].y + own[0].d + 46, 0);
     // clear of the xN marker, which sits on the top face at the same height
-    const dy = above ? -32 : 24;
+    const dy = above ? -54 : 16;
     root.append(txt(at[0], at[1] + dy, `${nd.label}`,
       { class: "cap", "text-anchor": "middle" }));
     root.append(txt(at[0], at[1] + dy + 12,
@@ -249,9 +283,11 @@ export function render(svg, g, onPick) {
     const at = iso(x0 - 14, back + 34, 0);
     root.append(txt(at[0], at[1], title.toUpperCase(),
       { class: "branch", "text-anchor": "end" }));
-    add(at[0] - 110, at[1] - 12); add(at[0] + 6, at[1] + 12);
+    add(at[0] - 150, at[1] - 12); add(at[0] + 6, at[1] + 12);
   }
 
+  setView();
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
   installPanZoom(svg, root);
   return { head: describe(g) };
 }
