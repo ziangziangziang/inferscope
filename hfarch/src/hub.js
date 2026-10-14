@@ -1,106 +1,315 @@
 /**
  * Talking to the Hub, from the browser.
  *
- * No weights are fetched. A repo's shape is declared in `config.json`, and the
- * Hub serves it with permissive CORS, so the whole thing runs client-side. The
- * mirrors are tried in turn because the CDN that backs a given host is not
- * reachable from everywhere.
- */
-const HOSTS = [
-  "https://huggingface.co",
-  "https://hf-mirror.com",
-];
-
-/**
- * Last resort: ask the host we were served from.
+ * A model's shape is declared in `config.json`, so no weights are ever fetched.
+ * That is the easy half. The hard half is that "could not read the model" has
+ * at least five causes with five different fixes, and the browser reports most
+ * of them identically — as a bare `TypeError`, or as nothing at all:
  *
- * A browser often cannot reach the Hub at all — behind a corporate proxy, or
- * on a network where the CDN redirect drops its CORS headers — and neither can
- * the server, which needs its own egress proxy. So the deployed copy falls back
- * to a narrow same-origin route that only ever reads public model metadata.
+ *   unreachable   the host is not reachable from this network
+ *   cors          the host answers, but refuses a cross-origin read
+ *   timeout       packets are being dropped, so nothing answers either way
+ *   gated         401/403, which is a permission, not a failure
+ *   missing       the repo has no config.json where we looked
+ *
+ * Only by separating them can the app tell the reader something useful. So
+ * every attempt is classified and recorded, and the failure carries its own
+ * remedies rather than one line of text.
+ *
+ * Two of those causes are not the reader's fault and have a fix here:
+ *
+ *   - `hf-mirror.com` answers its CDN redirect with
+ *     `Access-Control-Allow-Origin: https://hf-mirror.com`, so a page served
+ *     from localhost gets nothing back. A no-cors request proves the network
+ *     is fine and the refusal is CORS — that is what `classify()` does.
+ *   - `serve.py`, which ships with this app, adds a same-origin route that
+ *     reads the same file with urllib, where the network is fine.
  */
-async function viaOrigin(repo) {
-  const r = await fetch(`/api/hf/config?repo=${encodeURIComponent(repo)}`,
-    { signal: AbortSignal.timeout(25000) });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail || `${repo}: not readable`);
-  return { repo, files: body.files, meta: null, host: body.host || "this server" };
-}
-
+const HOSTS = ["https://huggingface.co", "https://hf-mirror.com"];
 const FILES = ["config.json", "generation_config.json", "preprocessor_config.json"];
 
+/** `owner/name`, or `owner/name/subfolder` for one component of a pipeline. */
+const REPO = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+
+const DEADLINE = 3500;        // per hub request
+const ORIGIN_DEADLINE = 20000; // the route does the read server-side
+
+/** Sub-folders a diffusers pipeline is made of, for the "where else to look" hint. */
+const COMPONENTS = ["unet", "transformer", "vae", "text_encoder", "text_encoder_2", "scheduler"];
+
+export function splitRepo(repo) {
+  const parts = String(repo || "").split("/");
+  return { repo: parts.slice(0, 2).join("/"), sub: parts[2] || "" };
+}
+
 /**
- * Fetch with a deadline. Without one, a host that silently drops packets —
- * which is what a blocked `huggingface.co` does — leaves the drawing waiting
- * on a connection that will never answer, instead of falling through to a
- * mirror that would have worked in half a second.
+ * A failure with an explanation attached.
+ *
+ * `attempts` is what was tried, in order, with the outcome; `fixes` is what
+ * would actually get a diagram on screen. Both are shown.
  */
-async function timed(url, ms = 8000) {
+export class HubError extends Error {
+  constructor(message, { kind = "network", title = "could not read this model",
+    attempts = [], fixes = [] } = {}) {
+    super(message);
+    this.name = "HubError";
+    this.kind = kind; this.title = title; this.attempts = attempts; this.fixes = fixes;
+  }
+}
+
+async function timed(url, ms, init = {}) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms);
+  const t0 = Date.now();
   try {
-    return await fetch(url, { redirect: "follow", signal: ctl.signal });
+    return await fetch(url, { redirect: "follow", ...init, signal: ctl.signal });
+  } catch (e) {
+    // Only two things throw out of fetch, and they mean different things:
+    // AbortError is a deadline we set; anything else here is refused or
+    // unreachable at the network or CORS layer, which a no-cors probe tells
+    // apart afterwards.
+    const err = new Error(e instanceof Error ? e.message : String(e));
+    err.kind = e && e.name === "AbortError" ? "timeout" : "blocked";
+    err.ms = Date.now() - t0;
+    throw err;
   } finally {
     clearTimeout(t);
   }
 }
 
+/**
+ * Why did that fetch fail?
+ *
+ * `fetch` itself will not say: a CORS refusal, a DNS failure and a dropped
+ * connection all arrive as "Failed to fetch". A no-cors request has no CORS
+ * check to fail, so if *it* succeeds the network is fine and the original
+ * refusal was policy; if it fails too, the host is genuinely unreachable.
+ */
+async function classify(url) {
+  try {
+    await timed(url, 3000, { mode: "no-cors" });
+    return "cors";
+  } catch (e) {
+    return e.kind === "timeout" ? "timeout" : "unreachable";
+  }
+}
+
+const url = (host, repo, file) => {
+  const { repo: r, sub } = splitRepo(repo);
+  return `${host}/${r}/resolve/main/${sub ? sub + "/" : ""}${file}`;
+};
+
+/* ------------------------------------------------------------------ *
+ * What this browser has learned about reaching the Hub.
+ *
+ * The Hub is blocked from here, and every load paying two full timeouts
+ * before it discovers that again is most of the wait. One record per host,
+ * consulted before anything is tried.
+ * ------------------------------------------------------------------ */
+const DIAG = "hfarch.reach.v1";
+
+function readDiag() {
+  try { return JSON.parse(localStorage.getItem(DIAG) || "{}"); } catch { return {}; }
+}
+function writeDiag(host, state) {
+  try {
+    const all = readDiag();
+    all[host] = { state, at: Date.now() };
+    localStorage.setItem(DIAG, JSON.stringify(all));
+  } catch { /* the diagnosis is optional */ }
+}
+
+/** Try one Hub host for the whole metadata set. */
+async function fromHost(host, repo, notes) {
+  const out = { repo, files: {}, meta: null, host, via: "hub" };
+  for (const f of FILES) {
+    try {
+      const t0 = Date.now();
+      const r = await timed(url(host, repo, f), DEADLINE);
+      if (!r.ok) {
+        if (f === "config.json") {
+          const body = (await r.text().catch(() => "")).slice(0, 160).trim();
+          notes.push({ host, ms: Date.now() - t0, state: `HTTP ${r.status}`,
+            note: r.status === 401 || r.status === 403
+              ? (body.startsWith("{") ? body.slice(0, 90) : body || "no sign-in here")
+              : "" });
+          throw Object.assign(new Error(""), {
+            kind: r.status === 401 || r.status === 403 ? "gated"
+              : r.status === 429 ? "ratelimited" : "missing",
+            status: r.status, ms: Date.now() - t0, host, detail: body,
+          });
+        }
+        continue;                                  // the other two are optional
+      }
+      out.files[f] = await r.json();
+    } catch (e) {
+      if (e && (e.kind === "gated" || e.kind === "ratelimited" || e.kind === "missing")) throw e;
+      if (f !== "config.json") continue;         // optional file, ignore
+      const t0 = Date.now();
+      const state = await classify(url(host, repo, f));
+      notes.push({ host, ms: Date.now() - t0, state });
+      throw Object.assign(new Error(""), { kind: state, host, ms: e.ms || Date.now() - t0 });
+    }
+  }
+  if (!out.files["config.json"]) {
+    throw Object.assign(new Error(""), { kind: "missing", host, ms: 0 });
+  }
+  writeDiag(host, "ok");
+  try {
+    const r = await timed(`${host}/api/models/${splitRepo(repo).repo}`, 2500);
+    if (r.ok) out.meta = await r.json();
+  } catch { /* metadata is a nicety */ }
+  return out;
+}
+
+/**
+ * Last resort: ask the host we were served from.
+ *
+ * `serve.py` reads the same three files with urllib, which reaches the Hub
+ * from networks where the browser cannot. It is same-origin, so there is no
+ * CORS check to fail.
+ */
+async function viaOrigin(repo, notes) {
+  const t0 = Date.now();
+  let r;
+  try {
+    r = await fetch(`/api/hf/config?repo=${encodeURIComponent(repo)}`,
+      { signal: AbortSignal.timeout(ORIGIN_DEADLINE) });
+  } catch (e) {
+    notes.push({ host: "this server", ms: Date.now() - t0,
+      state: e && e.name === "TimeoutError" ? "timeout" : "no answer" });
+    throw Object.assign(new Error(""), { kind: "noanswer", ms: Date.now() - t0 });
+  }
+  const ms = Date.now() - t0;
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (r.status === 404) {
+      notes.push({ host: "this server", ms, state: "no such route" });
+      throw Object.assign(new Error(""), { kind: "noroute", ms });
+    }
+    notes.push({ host: "this server", ms, state: `HTTP ${r.status}` });
+    const detail = String((body && body.detail) || "");
+    const perHost = JSON.stringify((body && body.detail_by_host) || "");
+    throw Object.assign(new Error(""), {
+      kind: r.status === 400 ? "badname"
+        : /gated/i.test(detail + perHost) ? "gated"
+        : /429/.test(detail + perHost) ? "ratelimited" : "failed",
+      detail, ms,
+    });
+  }
+  notes.push({ host: "this server", ms, state: "ok", via: "origin" });
+  return {
+    repo, files: body.files || {}, meta: null,
+    host: body.host || "this server", via: "origin",
+  };
+}
+
+const say = {
+  cors: "answered, then refused the cross-origin read",
+  unreachable: "not reachable from this browser",
+  timeout: "no answer before the deadline",
+  missing: "no config.json at that address",
+  gated: "repo is gated — sign in to the Hub",
+  ratelimited: "rate limited (429)",
+  noroute: "served by a plain static server: no /api/hf/config route",
+  noanswer: "the server did not answer",
+  badname: "that is not a model name",
+  failed: "read failed",
+};
+
 export async function getModel(repo) {
-  repo = String(repo || "").trim().replace(/^https?:\/\/huggingface\.co\//, "")
+  repo = String(repo || "").trim()
+    .replace(/^https?:\/\/(huggingface\.co|hf-mirror\.com)\//, "")
     .replace(/\/+$/, "");
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
-    throw new Error("give a model name like Qwen/Qwen3-4B");
+  if (!REPO.test(repo)) {
+    throw new HubError("give a model name like Qwen/Qwen3-4B — or "
+      + "owner/name/unet for one component of a pipeline",
+      { kind: "badname", title: "that name is not readable",
+        attempts: [{ host: "—", ms: 0, state: `does not match owner/name: "${repo}"` }],
+        fixes: ["Qwen/Qwen3-4B", "openai/clip-vit-large-patch14",
+          "facebook/DiT-XL-2-256/transformer"] });
   }
 
-  let hostErr = null;
-  for (const host of HOSTS) {
-    try {
-      const out = { repo, files: {}, meta: null, host };
-      for (const f of FILES) {
-        try {
-          const r = await timed(`${host}/${repo}/resolve/main/${f}`, 5000);
-          if (!r.ok) {
-            // a gate or a missing file often explains itself in plain text
-            if (f === "config.json" && (r.status === 401 || r.status === 403)) {
-              const why = (await r.text()).slice(0, 120).trim();
-              if (why && why[0] === "{") out.files[f] = JSON.parse(why);
-              else throw new Error(`${repo} is gated — ${why || "sign in to the Hub"}`);
-            }
-            continue;
-          }
-          out.files[f] = await r.json();
-        } catch (e) {
-          if (f === "config.json" && /gated/.test(e.message)) throw e;
-        }
-      }
-      if (!out.files["config.json"]) throw new Error("config.json not readable");
+  const notes = [];
+  const diag = readDiag();
+  const blocked = HOSTS.every((h) => diag[h] && diag[h].state !== "ok");
+  // Known-blocked: ask the same-origin route first, it is the only thing that
+  // has ever worked from here. Otherwise the Hub is tried first, because it is
+  // the honest source, and this order is remembered per host afterwards.
+  const order = blocked ? ["origin", ...HOSTS] : [...HOSTS, "origin"];
+
+  let originTried = false;
+  let last = null;
+  for (const host of order) {
+    if (host === "origin") {
+      if (originTried) continue;
+      originTried = true;
+      if (!location.protocol.startsWith("http")) continue;
       try {
-        const r = await timed(`${host}/api/models/${repo}`, 4000);
-        if (r.ok) out.meta = await r.json();
-      } catch { /* metadata is a nicety */ }
-      return out;
-    } catch (e) {
-      hostErr = e;
+        return await viaOrigin(repo, notes);
+      } catch (e) {
+        last = e;
+        continue;
+      }
     }
-  }
-  // no Hub reachable from here — try the origin that served this page
-  if (location.protocol.startsWith("http")) {
     try {
-      return await viaOrigin(repo);
+      return await fromHost(host, repo, notes);
     } catch (e) {
-      hostErr = e;
+      last = e;
+      writeDiag(host, e.kind);
     }
   }
-  throw new Error(`${repo}: ${hostErr ? hostErr.message : "could not be read"}`);
+
+  const attempts = notes.map((nt) => ({
+    host: nt.host, ms: nt.ms,
+    state: nt.state === "ok" ? "ok" : (say[nt.state] || nt.state),
+    note: nt.note || "",
+  }));
+  const states = new Set(notes.map((nt) => nt.state).concat(last ? [last.kind] : []));
+
+  if (states.has("gated")) {
+    throw new HubError(`${repo} is gated. The Hub answers 401 or 403 for it, `
+      + `and this viewer carries no token.`,
+      { kind: "gated", title: "this repo is gated", attempts,
+        fixes: ["open the repo in a signed-in tab and copy its config.json, then drop it here",
+          "or name a repo that is public"] });
+  }
+  if (states.has("missing") && !states.has("cors") && !states.has("unreachable")) {
+    const base = splitRepo(repo).repo;
+    throw new HubError(`no config.json at ${repo}.`,
+      { kind: "missing", title: "nothing to read at that address", attempts,
+        fixes: ["a diffusers pipeline keeps each part in its own folder — try "
+          + COMPONENTS.map((c) => `${base}/${c}`).join(", ")] });
+  }
+  if (states.has("badname")) {
+    throw new HubError(last && last.detail ? last.detail : "that name was refused.",
+      { kind: "badname", title: "not a readable name", attempts, fixes: [] });
+  }
+
+  const fixes = [];
+  if (states.has("cors") || states.has("unreachable") || states.has("timeout")) {
+    fixes.push("serve this directory with the bundled route — python3 serve.py 8811 "
+      + "— which reads config.json server-side, where the network is fine");
+  }
+  if (states.has("noroute") || states.has("noanswer")) {
+    fixes.push("you are on a plain static server; restart it as python3 serve.py 8811");
+  }
+  fixes.push("or drop this model's config.json anywhere on this page — everything "
+    + "below is derived from that one file");
+  if (last && last.detail) fixes.push(`detail: ${last.detail}`);
+
+  throw new HubError(
+    `${repo}: this browser could not read it. Nothing failed politely, so here is what was tried.`,
+    { kind: (last && last.kind) || "network",
+      title: "this browser cannot read the Hub", attempts, fixes });
 }
 
 /* ------------------------------------------------------------------ *
  * A cache of configs already read.
  *
- * A model's shape does not change, so re-reading config.json for a repo
- * this browser has already seen buys nothing but a wait -- and the wait
- * is not short, because an unreachable Hub costs a full timeout per
- * host before the origin fallback. Cached reads are instant.
+ * A model's shape does not change, so re-reading config.json for a repo this
+ * browser has already seen buys nothing but a wait -- and on a network like
+ * this one the wait is the better part of a minute. Cached reads are instant.
  * ------------------------------------------------------------------ */
 const KEY = "hfarch.configs.v1";
 const LIMIT = 24;

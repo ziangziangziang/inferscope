@@ -1,4 +1,4 @@
-import { age, cacheGet, cachePut, fmt, getModel, recent } from "./hub.js";
+import { HubError, age, cacheGet, cachePut, fmt, getModel, recent } from "./hub.js";
 import { build } from "./graph.js";
 import { render } from "./render.js";
 
@@ -23,7 +23,8 @@ function status(state, what, steps = [], meta = "") {
   $("stMeta").innerHTML = meta;
 }
 const elapsed = () => `${Math.round(performance.now() - t0)} ms`;
-const svg = $("svg"), err = $("err"), side = $("side"), detail = $("detail"), hint = $("hint");
+const svg = $("svg"), err = $("err"), side = $("side"), detail = $("detail"),
+  hint = $("hint"), why = $("why");
 
 // the arrowhead the renderer points at
 svg.insertAdjacentHTML("afterbegin",
@@ -35,6 +36,34 @@ function fail(e) {
   err.hidden = false;
   err.textContent = e && e.message ? e.message : String(e);
   setTimeout(() => { err.hidden = true; }, 6000);
+}
+
+/**
+ * A failure that explains itself.
+ *
+ * "Failed to fetch" is not an explanation, and the same five words cover a
+ * blocked network, a CORS refusal and a typo. So what was tried, in what
+ * order, with what outcome, is shown next to what would fix it. The panel
+ * stays up: six seconds is not long enough to read a remedy you have to act
+ * on.
+ */
+function explain(e) {
+  why.hidden = false;
+  hint.hidden = true;
+  const title = (e && e.title) || "could not draw this model";
+  const attempts = (e && e.attempts) || [];
+  const fixes = (e && e.fixes) || [];
+  const rows = attempts.length
+    ? attempts.map((a) => `<li><b>${a.host}</b><span>${a.state}</span>`
+      + `<em>${a.ms ? a.ms + " ms" : ""}</em></li>`).join("")
+    : `<li><b>—</b><span>${(e && e.message) || String(e)}</span></li>`;
+  why.innerHTML = `
+    <h3>${title}</h3>
+    ${attempts.length ? `<ul class="why-list">${rows}</ul>` : `<p>${e.message}</p>`}
+    ${fixes.length ? `<h4>what would work</h4><ol class="why-fix">`
+      + fixes.map((f) => `<li>${f}</li>`).join("") + `</ol>` : ""}`;
+  why.scrollTop = 0;
+  $("stSteps").textContent = "";
 }
 
 function show(node) {
@@ -88,29 +117,79 @@ function fillRecent() {
 async function load(repo) {
   hint.hidden = true;
   err.hidden = true;
+  why.hidden = true;
   step = 0;
   const STEPS = ["config.json", "build graph", "draw"];
 
   // Already drawn here before: the shape cannot have changed, so skip the
-  // network entirely. This is the difference between instant and a wait that
-  // can run past half a minute on a sandboxed network.
+  // network entirely. On a network like this one that is the difference
+  // between instant and nothing at all.
   const hit = cacheGet(repo);
   if (hit && hit.files && hit.files["config.json"]) {
     status("working", `${repo} from cache`, STEPS, "");
-    draw(hit.files["config.json"], repo, hit.host, `cached ${age(hit.at)}`);
+    paint(hit.files["config.json"], repo, hit.host, `cached ${age(hit.at)}`);
     return;
   }
   status("working", `reading ${repo}`, STEPS, "");
   try {
     const r = await getModel(repo);
     cachePut(repo, r.files, r.host);
-    draw(r.files["config.json"], repo, r.host, `via ${r.host.replace("https://", "")}`);
+    paint(r.files["config.json"], repo, r.host,
+      r.via === "origin" ? "via this server's own route" : `via ${r.host.replace("https://", "")}`);
   } catch (e) {
     step = -1;
-    hint.hidden = false;
     status("error", `could not draw ${repo}`, [], `<b>${elapsed()}</b>`);
-    fail(e);
+    if (e instanceof HubError) explain(e);
+    else { hint.hidden = false; fail(e); }
   }
+}
+
+/** Build and draw, reporting a shape it cannot read rather than throwing. */
+function paint(cfg, repo, host, how) {
+  try {
+    draw(cfg, repo, host, how);
+    return true;
+  } catch (e) {
+    step = -1;
+    status("error", `could not draw ${repo}`, [], `<b>${elapsed()}</b>`);
+    explain({
+      title: "nothing here says what this model is made of",
+      message: e.message,
+      attempts: [{ host: (host || "config.json"), ms: 0, state: e.message }],
+      fixes: ["check it is the model's own config.json — a pipeline's root "
+        + "config points at its parts (unet/, transformer/, text_encoder/) rather than describing them",
+        "this viewer draws what a config declares; where a key is missing it "
+        + "reports it rather than guessing"],
+    });
+    return false;
+  }
+}
+
+/**
+ * A config.json from this machine.
+ *
+ * The network is not the only source, and on a network like this one it is
+ * not even the fastest: curl writes `config.json` to disk happily. Reading
+ * one here is honest — the drawing is derived from exactly the same file.
+ */
+async function fromFile(file) {
+  err.hidden = true;
+  why.hidden = true;
+  hint.hidden = true;
+  let cfg;
+  try {
+    cfg = JSON.parse(await file.text());
+  } catch (e) {
+    explain({
+      title: "that file is not a config",
+      attempts: [{ host: file.name, ms: 0, state: `not JSON — ${e.message}` }],
+      fixes: ["drop the model's config.json — the one curl wrote should do"],
+    });
+    return;
+  }
+  // not cached: a local file's name is not a repo, and it can change
+  paint(cfg, file.name.replace(/\.json$/i, ""), file.name,
+    `read from ${file.name} on this machine`);
 }
 
 function draw(cfg, repo, host, how) {
@@ -121,6 +200,8 @@ function draw(cfg, repo, host, how) {
   step = 2;
   status("working", "drawing", STEPS, `${g.nodes.length} components · ${elapsed()}`);
   last = g; last.cfg = cfg; last.repo = repo; last.host = host;
+  why.hidden = true;
+  hint.hidden = true;
   $("src").textContent = `${(host || "").replace("https://", "")} · config.json only`;
   const { head } = render(svg, g, (nd) => show(nd), mode());
   $("sum").textContent = head;
@@ -138,6 +219,35 @@ $("go").addEventListener("submit", (e) => {
   if (v) history.replaceState(null, "", "#" + v), load(v);
 });
 $("close").addEventListener("click", () => { side.hidden = true; });
+$("whyclose").addEventListener("click", () => { why.hidden = true; });
+
+/* ---- a config.json from this machine ----
+ * Drop Anywhere is forgiving on purpose: a file picker is more discoverable
+ * but a drag is what you do when you have just curled a config to disk. */
+let dragDepth = 0;
+const hasFile = (ev) => [...(ev.dataTransfer ? ev.dataTransfer.types : [])].includes("Files");
+const canvas = document.querySelector("main");
+canvas.addEventListener("dragenter", (ev) => {
+  if (!hasFile(ev)) return;
+  ev.preventDefault(); dragDepth++; canvas.classList.add("dropping");
+});
+canvas.addEventListener("dragover", (ev) => { if (hasFile(ev)) ev.preventDefault(); });
+canvas.addEventListener("dragleave", () => {
+  if (--dragDepth <= 0) { dragDepth = 0; canvas.classList.remove("dropping"); }
+});
+canvas.addEventListener("drop", (ev) => {
+  if (!hasFile(ev)) return;
+  ev.preventDefault();
+  dragDepth = 0; canvas.classList.remove("dropping");
+  const file = ev.dataTransfer.files[0];
+  if (file) fromFile(file);
+});
+$("pick").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", (ev) => {
+  const file = ev.target.files[0];
+  if (file) fromFile(file);
+  ev.target.value = "";
+});
 
 function syncMode() {
   const b = $("mode");

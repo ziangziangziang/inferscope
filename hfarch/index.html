@@ -16,6 +16,7 @@
     <button type="submit">draw</button>
   </form>
   <span class="drops" id="drops"></span>
+  <button type="button" class="mode ghost" id="pick" title="draw the architecture a local config.json declares">open a config.json</button>
   <button class="mode" id="mode" title="switch between the flat and 3D drawing">3D</button>
   <div class="src"><div id="src">reads config.json — no weights downloaded</div><div id="sum" class="sum"></div></div>
 </header>
@@ -23,7 +24,12 @@
 <main>
   <section class="stage">
     <svg id="svg" role="img" aria-label="Model architecture"></svg>
-    <div class="hint" id="hint">type a model name to begin</div>
+    <div class="hint" id="hint">type a model name — or drop a config.json here</div>
+
+    <!-- what failed, what was tried, and what would fix it -->
+    <div class="why" id="why" hidden>
+      <button class="close" id="whyclose" title="close">×</button>
+    </div>
   </section>
 
   <aside class="side" id="side" hidden>
@@ -31,6 +37,8 @@
     <div id="detail"></div>
   </aside>
 </main>
+
+<input type="file" id="file" accept=".json,application/json" hidden>
 
 <div class="status" id="status" data-state="idle">
   <span class="dot"></span>
