@@ -19,12 +19,7 @@
  *     make every block except the embedding a speck.
  */
 import { fmt } from "./hub.js";
-
-const COS30 = Math.cos(Math.PI / 6);
-const SIN30 = 0.5;
-
-const iso = (x, y, z) => [(x - y) * COS30, (x + y) * SIN30 - z];
-const poly = (pts) => pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+import { Bounds, INK, KINDS, box, el, iso, poly, txt } from "./iso.js";
 
 const COL = 152;      // world-x spacing between stages
 const LANE = 172;     // world-y spacing between branches; at 108 the
@@ -33,20 +28,6 @@ const DROP = 26;      // altitude lost per stage -- the U-Net profile: the
                        // pipeline descends as it goes. It is also what lets a
                        // residual run straight, because a block and its own
                        // bypass share one altitude and need no turn.
-const INK = "#2f3a2c";
-
-/** block face colours, one per kind */
-const KINDS = {
-  tensor: "#a9b4a0",
-  embed: "#7cb98f",
-  stack: "#4c9e69",
-  attention: "#6d9fd2",
-  norm: "#aab59f",
-  mlp: "#b2bd7d",
-  projector: "#9a7ec1",
-  moe: "#c99962",
-};
-
 /**
  * A patch on a block's top face, addressed in face units (u, v) rather than
  * screen units, so it lies in the block's own perspective. This is what puts a
@@ -122,35 +103,24 @@ function drawPlate(root, nd, it, hit) {
   }
 }
 
-const el = (tag, attrs, kids) => {
-  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
-  for (const k of [].concat(kids || [])) if (k) e.append(k);
-  return e;
-};
-const txt = (x, y, s, attrs = {}) =>
-  el("text", { x, y, ...attrs }, document.createTextNode(s));
-
-/** how big a block looks, from the parameters it holds */
+/** How big a block looks, from the parameters it holds. Log, because the
+ *  counts span six orders of magnitude. */
 function bulk(params, max) {
   if (!params || !max) return 0;
   return Math.max(0, Math.min(1, Math.log10(params + 1) / Math.log10(max + 1)));
 }
 
-/**
- * Split a block's height between its sub-layers, so a decoder block is drawn as
- * a stack of slabs rather than one solid lump. Heights follow the parameters
- * each sub-layer holds, with a floor so a 4K norm is still visible.
- */
+/** Split a repeated block's height between its sub-layers. */
 function slabPlan(nd, h) {
   const parts = nd.template;
+  const FLOOR = 0.07;
   const tot = parts.reduce((a, q) => a + (q.params || 1), 0);
-  const room = h - (parts.length - 1) * 1.5;
-  let z = 0;
+  const free = Math.max(0, 1 - FLOOR * parts.length);
+  let dz = 0;
   return parts.map((q) => {
-    const sh = Math.max(5, (q.params || 1) / tot * room);
-    const out = { sub: q, dz: z, h: sh };
-    z += sh + 1.5;
+    const sh = (FLOOR + ((q.params || 1) / tot) * free) * h;
+    const out = { sub: q, dz, h: sh };
+    dz += sh;
     return out;
   });
 }
@@ -168,6 +138,18 @@ function stages(g) {
   return st;
 }
 
+/**
+ * The layout: what goes where, and in what order it is drawn.
+ *
+ * Three axes, each with one meaning:
+ *   x  stage  -- a component sits one column right of whatever feeds it
+ *   y  lane   -- vision behind, language in front, so the two stay aligned
+ *   z  depth  -- each stage drops, the U-Net profile, so the pipeline descends
+ *
+ * Layer order is explicit and is the thing that decides whether a figure reads
+ * or turns to soup: connectors, then residuals, then solids back to front, then
+ * every piece of text above all of it.
+ */
 function layout(g) {
   const st = stages(g);
   const max = Math.max(...g.nodes.map((n) => n.params || 0));
@@ -177,7 +159,6 @@ function layout(g) {
     if (!lanes.has(name)) lanes.set(name, []);
     lanes.get(name).push(nd);
   }
-  // vision at the back, language in front: painter's order matches reading order
   const order = [...lanes.keys()].sort((a, b) =>
     (a === "vision" ? -1 : b === "vision" ? 1 : 0));
 
@@ -187,9 +168,7 @@ function layout(g) {
     for (const nd of list) {
       const t = bulk(nd.params, max);
       const stage = st.get(nd.id);
-      const x = stage * COL;
-      const y = li * LANE;
-      const z = -stage * DROP;                 // altitude encodes position
+      const x = stage * COL, y = li * LANE, z = -stage * DROP;
       const w = 74, d = 26 + t * 26;
       const repeat = nd.repeat || 0;
       if (repeat > 4) {

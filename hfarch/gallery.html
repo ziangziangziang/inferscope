@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Model Atlas — module gallery</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  /* the gallery is a test rig, not a product surface */
+  body { background: #eef4ea; }
+  .gwrap { padding: 18px 24px 60px; }
+  .gh h1 { font-size: 16px; margin: 0 0 2px; }
+  .gh p { color: #6b7a66; font-size: 12.5px; margin: 0 0 16px; max-width: 80ch; }
+  .cell { margin: 0 0 10px; }
+  .cell h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    color: #6b7a66; margin: 0 0 4px; }
+  .cell svg { width: 100%; height: 240px; display: block;
+    background: #f4f8f1; border: 1px solid #cfdac8; border-radius: 8px; }
+  .cell .note { font-size: 11.5px; color: #93a08d; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="gwrap">
+  <div class="gh">
+    <h1>module gallery</h1>
+    <p>Each component drawn alone in the shared camera, at large size. Composed
+       views are assembled from parts that have already been looked at here.</p>
+  </div>
+  <div id="cells"></div>
+</div>
+<script type="module" src="src/gallery.js"></script>
+</body>
+</html>
