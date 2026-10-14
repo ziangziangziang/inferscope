@@ -1,104 +1,315 @@
 /**
- * Drawing the graph.
+ * Drawing the graph, in the same isometric camera the main app uses.
  *
- * Three things this has to get right, in order of how much they were getting
- * wrong before:
+ * The camera is `iso(x, y, z)` — a world point becomes a screen point — and
+ * every block, the ground and the captions all go through it, so they are
+ * literally the same perspective as the architecture view in the app rather
+ * than a flat diagram that happens to be laid out left to right.
  *
- *  1. A long stack is drawn as first, a marker, last. The count stays in the
- *     picture; sixty-five boxes do not.
- *  2. Arrows, because boxes say what exists and not what feeds what.
- *  3. Boxes sized by the parameters they hold, so the shape of a model is
- *     visible before a single number is read — but with a floor and a ceiling,
- *     because one 389M embedding beside a 5K norm should not be a rectangle and
- *     a speck.
+ * Three things carry meaning, and each one was wrong the first time:
+ *
+ *  1. Columns are stages and rows are branches. A component sits one column
+ *     right of whatever feeds it, so the vision lane and the language lane stay
+ *     column-aligned and the join between them is visible.
+ *  2. A long stack is its first block, a marker for the ones between, and its
+ *     last. Sixty-five identical blocks say "there are sixty-five" and take
+ *     more room than everything else on the page.
+ *  3. Height and depth scale with the parameters a block holds, on a log
+ *     scale — the counts span six orders of magnitude, so a linear one would
+ *     make every block except the embedding a speck.
  */
 import { fmt } from "./hub.js";
 
-const BOX = { w: 172, h: 56 };
-const GAP = { x: 74, y: 22 };
-const COL = { stem: 0.92 };          // box width per layer of depth
+const COS30 = Math.cos(Math.PI / 6);
+const SIN30 = 0.5;
 
+const iso = (x, y, z) => [(x - y) * COS30, (x + y) * SIN30 - z];
+const poly = (pts) => pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+
+const COL = 152;      // world-x spacing between stages
+const LANE = 172;     // world-y spacing between branches; at 108 the
+                       // front lane landed on top of the back one
+const INK = "#2f3a2c";
+
+/** block face colours, one per kind */
 const KINDS = {
-  tensor: ["#eceee6", "#6d7565"],
-  embed: ["#d7e6da", "#2c5c41"],
-  stack: ["#cfe2d5", "#22503a"],
-  attention: ["#d3e0ee", "#2b5273"],
-  norm: ["#e4e8dd", "#5b6353"],
-  mlp: ["#e0e4d0", "#55603c"],
-  projector: ["#e2d8ea", "#5f4470"],
-  moe: ["#eadfd2", "#7a5636"],
+  tensor: "#a9b4a0",
+  embed: "#7cb98f",
+  stack: "#4c9e69",
+  attention: "#6d9fd2",
+  norm: "#aab59f",
+  mlp: "#b2bd7d",
+  projector: "#9a7ec1",
+  moe: "#c99962",
 };
 
-const size = (params, max) => {
-  if (!params) return 30;
-  const t = Math.max(0.06, Math.min(1, Math.log10(params + 1) / Math.log10(max + 1)));
-  return 30 + t * 66;
+const el = (tag, attrs, kids) => {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
+  for (const k of [].concat(kids || [])) if (k) e.append(k);
+  return e;
 };
+const txt = (x, y, s, attrs = {}) =>
+  el("text", { x, y, ...attrs }, document.createTextNode(s));
 
-/**
- * Lay the graph out.
- *
- * Columns are *stages*, taken from the edges: a component sits one column
- * right of whatever feeds it. Rows are lanes, so the vision tower runs in its
- * own lane and the language stack in another, and the two stay column-aligned.
- * That is what makes the join visible — visual tokens land in the same column
- * the text tokens left, which is where the two stacks actually meet.
- *
- * The earlier version walked the node list and advanced on both axes, which
- * produced a diagonal staircase that ran off the side of the page.
- */
-function layout(g) {
-  const stage = new Map();
-  const order = g.nodes.map((n) => n.id);
-  for (const id of order) {
+/** how big a block looks, from the parameters it holds */
+function bulk(params, max) {
+  if (!params || !max) return 0;
+  return Math.max(0, Math.min(1, Math.log10(params + 1) / Math.log10(max + 1)));
+}
+
+/** Stage per node, from the edges: one column right of whatever feeds it. */
+function stages(g) {
+  const st = new Map();
+  for (const nd of g.nodes) {
     let s = 0;
     for (const e of g.edges) {
-      if (e.to === id && stage.has(e.from)) s = Math.max(s, stage.get(e.from) + 1);
+      if (e.to === nd.id && st.has(e.from)) s = Math.max(s, st.get(e.from) + 1);
     }
-    stage.set(id, s);
+    st.set(nd.id, s);
   }
+  return st;
+}
 
-  const lanes = [];
+function layout(g) {
+  const st = stages(g);
+  const max = Math.max(...g.nodes.map((n) => n.params || 0));
+  const lanes = new Map();
   for (const nd of g.nodes) {
     const name = nd.branch || "text";
-    let lane = lanes.find((l) => l.name === name);
-    if (!lane) lanes.push((lane = { name, items: [] }));
-    lane.items.push({ nd, stage: stage.get(nd.id) });
+    if (!lanes.has(name)) lanes.set(name, []);
+    lanes.get(name).push(nd);
   }
-  lanes.sort((a, b) => (a.name === "vision" ? -1 : b.name === "vision" ? 1 : 0));
+  // vision at the back, language in front: painter's order matches reading order
+  const order = [...lanes.keys()].sort((a, b) =>
+    (a === "vision" ? -1 : b === "vision" ? 1 : 0));
 
-  const max = Math.max(...g.nodes.map((n) => n.params || 0));
-  const placed = [];
-  const LANE_W = 60;
-  let y0 = 40;
-
-  lanes.forEach((lane, li) => {
-    // sort by stage so a lane reads left to right; ties keep insertion order
-    lane.items.forEach((it, i) => (it.i = i));
-    lane.items.sort((a, b) => a.stage - b.stage || a.i - b.i);
-    let laneTop = y0;
-    for (const it of lane.items) {
-      const { nd } = it;
+  const items = [];
+  order.forEach((name, li) => {
+    const list = lanes.get(name).slice().sort((a, b) => st.get(a.id) - st.get(b.id));
+    for (const nd of list) {
+      const t = bulk(nd.params, max);
+      const x = st.get(nd.id) * COL;
+      const y = li * LANE;
+      const w = 74, d = 26 + t * 30, h = 20 + t * 52;
       const repeat = nd.repeat || 0;
-      const d = Math.max(44, Math.min(96, size(nd.params, max)));
-      const x = 40 + it.stage * (BOX.w + GAP.x) + li * LANE_W;
       if (repeat > 4) {
-        const s = Math.max(d, 60);
-        const w = Math.min(BOX.w, Math.max(110, s * 1.4));
-        const cx = x + w / 2;
-        placed.push({ nd, i: 0, x: cx - s - 40, y: laneTop, w: s, d: s, kind: "box" });
-        placed.push({ nd, i: -1, hidden: repeat - 2, x: cx - 30, y: laneTop, w: 60, d: s, kind: "gap" });
-        placed.push({ nd, i: repeat - 1, x: cx + 40, y: laneTop, w, d: s, kind: "box" });
-        laneTop += s + GAP.y;
+        items.push({ nd, i: 0, x: x - 52, y, z: 0, w, d, h, lane: li });
+        items.push({ nd, i: -1, hidden: repeat - 2, x: x - 6, y, z: 0, w: 40, d, h, lane: li });
+        items.push({ nd, i: repeat - 1, x: x + 26, y, z: 0, w, d, h, lane: li });
       } else {
-        placed.push({ nd, i: -1, x, y: laneTop, w: BOX.w, d, kind: "box" });
-        laneTop += d + GAP.y;
+        items.push({ nd, i: -1, x, y, z: 0, w, d, h, lane: li });
       }
     }
-    lane.top = y0;
-    y0 = laneTop + 54;          // the next lane starts clear of this one
   });
-  return placed;
+  return items;
+}
+
+export function render(svg, g, onPick) {
+  svg.replaceChildren();
+  const items = layout(g);
+  const boxes = new Map();          // node id -> the block edges should leave from
+  for (const it of items) {
+    if (it.nd.repeat) {
+      if (it.i === it.nd.repeat - 1 || !boxes.has(it.nd.id)) boxes.set(it.nd.id, it);
+    } else boxes.set(it.nd.id, it);
+  }
+
+  // ---- one root group; pan/zoom only ever touches this ----
+  const root = el("g", {});
+  svg.append(root);
+
+  // ---- bounds first, so the viewBox fits the drawing with no scrolling ----
+  const bb = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  const add = (x, y) => {
+    bb.x0 = Math.min(bb.x0, x); bb.x1 = Math.max(bb.x1, x);
+    bb.y0 = Math.min(bb.y0, y); bb.y1 = Math.max(bb.y1, y);
+  };
+  for (const it of items) {
+    for (const p of [iso(it.x, it.y, 0), iso(it.x + it.w, it.y + it.d, it.h),
+      iso(it.x, it.y + it.d, 0), iso(it.x + it.w, it.y, 0)]) add(p[0], p[1]);
+    const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d, 0);
+    add(cx - 60, cy + 30); add(cx + 60, cy + 30);     // room for the caption
+    add(cx - 60, cy - 14); add(cx + 60, cy - 14);
+  }
+  const pad = 46;
+  svg.setAttribute("viewBox",
+    `${(bb.x0 - pad).toFixed(0)} ${(bb.y0 - pad).toFixed(0)} ` +
+    `${(bb.x1 - bb.x0 + pad * 2).toFixed(0)} ${(bb.y1 - bb.y0 + pad * 2).toFixed(0)}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+  // ---- ground ----
+  const gx0 = -18, gy0 = -18;
+  const gx1 = Math.max(...items.map((i) => i.x + i.w)) + 18;
+  const gy1 = Math.max(...items.map((i) => i.y + i.d)) + 18;
+  root.append(el("polygon", {
+    points: poly([iso(gx1, gy0, 0), iso(gx1, gy1, 0), iso(gx1, gy1, -6), iso(gx1, gy0, -6)]),
+    fill: "#b0c8a9", stroke: "#7d9c78", "stroke-width": 1,
+  }));
+  root.append(el("polygon", {
+    points: poly([iso(gx0, gy1, 0), iso(gx1, gy1, 0), iso(gx1, gy1, -6), iso(gx0, gy1, -6)]),
+    fill: "#c2d8bb", stroke: "#7d9c78", "stroke-width": 1,
+  }));
+  root.append(el("polygon", {
+    points: poly([iso(gx0, gy0, 0), iso(gx1, gy0, 0), iso(gx1, gy1, 0), iso(gx0, gy1, 0)]),
+    fill: "#e9f1e4", stroke: "#88a882", "stroke-width": 1.2,
+  }));
+
+  // ---- arrows, under the blocks ----
+  for (const e of g.edges) {
+    const a = boxes.get(e.from), b = boxes.get(e.to);
+    if (!a || !b) continue;
+    const p0 = iso(a.x + a.w, a.y + a.d / 2, 0);
+    const p1 = iso(b.x, b.y + b.d / 2, 0);
+    const mid = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2 - 10];
+    root.append(el("path", {
+      class: "edge", d: `M ${p0[0]} ${p0[1]} L ${mid[0]} ${p0[1]} L ${mid[0]} ${mid[1]} L ${p1[0] - 8} ${p1[1]}`,
+      "marker-end": "url(#head)",
+    }));
+  }
+
+  // ---- blocks, back lane first (painter's algorithm: x+y is nearer) ----
+  const sorted = items.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y));
+  for (const it of sorted) {
+    const nd = it.nd;
+    const color = KINDS[nd.kind] || KINDS.tensor;
+    if (it.i === -1 && nd.repeat) {                 // the elision marker
+      const p0 = iso(it.x + 4, it.y + it.d / 2, it.h / 2);
+      const p1 = iso(it.x + it.w - 4, it.y + it.d / 2, it.h / 2);
+      root.append(el("line", { class: "gap", x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }));
+      const [cx, cy] = iso(it.x + it.w / 2, it.y + it.d / 2, it.h);
+      root.append(txt(cx, cy - 4, `×${it.hidden}`, {
+        class: "gap-n", "text-anchor": "middle",
+      }));
+      continue;
+    }
+
+    const { x, y, z, w, d, h } = it;
+    const x1 = x + w, y1 = y + d, z1 = z + h;
+    const gEl = el("g", { class: "node", tabindex: "0", role: "button",
+      "aria-label": nd.label });
+    gEl.append(el("polygon", {
+      points: poly([iso(x, y1, z), iso(x, y1, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
+      fill: color, "fill-opacity": 0.22, stroke: INK, "stroke-width": 0.9,
+    }));
+    gEl.append(el("polygon", {
+      points: poly([iso(x1, y, z), iso(x1, y, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
+      fill: color, "fill-opacity": 0.14, stroke: INK, "stroke-width": 0.9,
+    }));
+    gEl.append(el("polygon", {
+      points: poly([iso(x, y, z1), iso(x1, y, z1), iso(x1, y1, z1), iso(x, y1, z1)]),
+      fill: "#ffffff", "fill-opacity": 0.62, stroke: INK, "stroke-width": 0.9,
+    }));
+    const act = () => onPick && onPick(nd, it);
+    gEl.addEventListener("click", act);
+    gEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter") act(); });
+    root.append(gEl);
+
+    // caption under the front face; the block's own height already says how
+    // much it weighs, so the caption carries only what height cannot
+    const [cx, cy] = iso(x + w / 2, y + d, 0);
+    if (!nd.repeat) {
+      const room = Math.max(6, Math.floor(w / 3.1));
+      const title = nd.label.length > room ? nd.label.slice(0, room - 1) + "…" : nd.label;
+      // Below the front face is where the *next* lane's blocks are, so the back
+      // lane's captions go above instead. Same reason the main app does this.
+      const above = it.lane === 0;
+      const [tx, ty] = above ? iso(x + w / 2, y, it.h) : [cx, cy];
+      root.append(txt(tx, ty + (above ? -10 : 14), title,
+        { class: "cap", "text-anchor": "middle" }));
+    }
+  }
+
+  // ---- one caption per repeated group, over the pair rather than each half ----
+  for (const nd of g.nodes) {
+    if (!nd.repeat || nd.repeat <= 4) continue;
+    const own = items.filter((i) => i.nd.id === nd.id);
+    const x0 = Math.min(...own.map((i) => i.x));
+    const x1 = Math.max(...own.map((i) => i.x + i.w));
+    const back = own[0].y;
+    const above = own[0].lane === 0;
+    const at = above ? iso((x0 + x1) / 2, back, own[0].h) : iso((x0 + x1) / 2, own[0].y + own[0].d, 0);
+    // clear of the xN marker, which sits on the top face at the same height
+    const dy = above ? -32 : 24;
+    root.append(txt(at[0], at[1] + dy, `${nd.label}`,
+      { class: "cap", "text-anchor": "middle" }));
+    root.append(txt(at[0], at[1] + dy + 12,
+      `${fmt(nd.params / nd.repeat)} each · ${fmt(nd.params)} total`,
+      { class: "cap-sub", "text-anchor": "middle" }));
+    add(at[0] - 100, at[1] + dy - 12); add(at[0] + 100, at[1] + dy + 24);
+  }
+
+  // ---- branch captions, above the back lane, left of the front one ----
+  for (const [name, title] of [["vision", "vision branch"], ["text", "language stack"]]) {
+    const own = items.filter((i) => (i.nd.branch || "text") === name);
+    if (!own.length) continue;
+    const back = Math.min(...own.map((i) => i.y));
+    const x0 = Math.min(...own.map((i) => i.x));
+    const x1 = Math.max(...own.map((i) => i.x + i.w));
+    const at = iso(x0 - 14, back + 34, 0);
+    root.append(txt(at[0], at[1], title.toUpperCase(),
+      { class: "branch", "text-anchor": "end" }));
+    add(at[0] - 110, at[1] - 12); add(at[0] + 6, at[1] + 12);
+  }
+
+  installPanZoom(svg, root);
+  return { head: describe(g) };
+}
+
+/**
+ * Pan and zoom.
+ *
+ * A view that moves on its own is worse than one that will not move at all, so
+ * this only pans while a button is actually down. Previously any pointer move
+ * past a few pixels started a drag, which meant simply moving the mouse across
+ * the drawing dragged it away.
+ */
+function installPanZoom(svg, root) {
+  let k = 1, tx = 0, ty = 0;
+  const apply = () => root.setAttribute("transform", `translate(${tx},${ty}) scale(${k})`);
+  let down = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+  svg.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    k = Math.min(3.5, Math.max(0.4, k * (e.deltaY < 0 ? 1.12 : 0.89)));
+    apply();
+  }, { passive: false });
+
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    down = true; moved = false;
+    sx = e.clientX; sy = e.clientY; ox = tx; oy = ty;
+  });
+  svg.addEventListener("pointermove", (e) => {
+    // the guard that matters: hover is not a drag
+    if (!down || !(e.buttons & 1)) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!moved && Math.hypot(dx, dy) < 4) return;
+    if (!moved) {
+      moved = true;
+      svg.classList.add("drag");
+      svg.setPointerCapture(e.pointerId);
+    }
+    tx = ox + dx; ty = oy + dy;
+    apply();
+  });
+  const end = (e) => {
+    if (!down) return;
+    down = false;
+    svg.classList.remove("drag");
+    if (e && e.pointerId != null && svg.hasPointerCapture(e.pointerId)) {
+      svg.releasePointerCapture(e.pointerId);
+    }
+    if (moved) {                       // a drag must not also count as a click
+      moved = false;
+      const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+      svg.addEventListener("click", swallow, { capture: true, once: true });
+      setTimeout(() => svg.removeEventListener("click", swallow, true), 0);
+    }
+  };
+  svg.addEventListener("pointerup", end);
+  svg.addEventListener("pointercancel", end);
+  svg.addEventListener("pointerleave", end);
 }
 
 /** One sentence about the whole thing, shown in the header. */
@@ -112,138 +323,4 @@ export function describe(g) {
     `${fmt(g.params)} parameters, derived from config`,
   ].filter(Boolean);
   return `${g.family} · ${bits.join(" · ")}`;
-}
-
-const el = (tag, attrs, kids) => {
-  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-  for (const k of [].concat(kids || [])) if (k) e.append(k);
-  return e;
-};
-
-export function render(svg, g, onPick) {
-  svg.replaceChildren();
-  const P = layout(g);
-  const byId = new Map();
-  for (const p of P) {
-    if (p.kind === "box" && p.i >= 0) {
-      // an edge leaving a repeated stack leaves its last member
-      const prev = byId.get(p.nd.id);
-      if (!prev || p.i > prev.i) byId.set(p.nd.id, p);
-    } else if (!p.nd.repeat) byId.set(p.nd.id, p);
-  }
-
-  // --- pan/zoom, so a wide model is explorable ---
-  const root = el("g", {});
-  svg.append(root);
-  const apply = (k, tx, ty) => {
-    root.setAttribute("transform", `translate(${tx},${ty}) scale(${k})`);
-  };
-  apply(1, 0, 0);
-
-  let k = 1, tx = 0, ty = 0, dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
-  svg.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    k = Math.min(3, Math.max(0.3, k * (e.deltaY < 0 ? 1.12 : 0.89)));
-    apply(k, tx, ty);
-  }, { passive: false });
-  // Panning must not eat clicks. Capturing the pointer on pointerdown made
-  // every click land on the <svg> instead of the box under it, so the panel
-  // never opened; capture only once the pointer has actually travelled.
-  svg.addEventListener("pointerdown", (e) => {
-    sx = e.clientX; sy = e.clientY; ox = tx; oy = ty;
-    moved = false;
-  });
-  svg.addEventListener("pointermove", (e) => {
-    const dx = e.clientX - sx, dy = e.clientY - sy;
-    if (!moved && Math.hypot(dx, dy) < 4) return;
-    if (!dragging) {
-      dragging = true; moved = true;
-      svg.classList.add("drag");
-      svg.setPointerCapture(e.pointerId);
-    }
-    tx = ox + dx; ty = oy + dy;
-    apply(k, tx, ty);
-  });
-  const endDrag = (e) => {
-    if (!dragging) return;
-    dragging = false;
-    svg.classList.remove("drag");
-    if (e && e.pointerId != null && svg.hasPointerCapture(e.pointerId)) {
-      svg.releasePointerCapture(e.pointerId);
-    }
-    // a real drag must not also register as a click on whatever it started over
-    if (moved) {
-      moved = false;
-      const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
-      svg.addEventListener("click", swallow, { capture: true, once: true });
-      setTimeout(() => svg.removeEventListener("click", swallow, true), 0);
-    }
-  };
-  svg.addEventListener("pointerup", endDrag);
-  svg.addEventListener("pointercancel", endDrag);
-
-  // --- arrows first, so boxes sit on top of them ---
-  for (const e of g.edges) {
-    const a = byId.get(e.from), b = byId.get(e.to);
-    if (!a || !b) continue;
-    const x1 = a.x + a.w + 8, y1 = a.y + a.d / 2;
-    const x2 = b.x - 8, y2 = b.y + b.d / 2;
-    const mx = (x1 + x2) / 2;
-    root.append(el("path", {
-      class: "edge",
-      d: `M ${x1} ${y1} L ${mx} ${y1} L ${mx} ${y2} L ${x2} ${y2}`,
-      "marker-end": "url(#head)",
-    }));
-    if (e.shape && x2 - x1 > 70) {
-      root.append(el("text", {
-        class: "gap-n", x: mx, y: (y1 + y2) / 2 - 6, "text-anchor": "middle",
-      }, document.createTextNode(e.shape.map((s) => String(s)).join("×"))));
-    }
-  }
-
-  // --- boxes ---
-  for (const p of P) {
-    const nd = p.nd;
-    const [fill, ink] = KINDS[nd.kind] || KINDS.tensor;
-    if (p.kind === "gap") {
-      root.append(el("path", {
-        class: "gap", d: `M ${p.x} ${p.y + p.d / 2} L ${p.x + p.w} ${p.y + p.d / 2}`,
-      }));
-      root.append(el("text", {
-        class: "gap-n", x: p.x + p.w / 2, y: p.y + p.d / 2 - 7, "text-anchor": "middle",
-      }, document.createTextNode(`×${p.hidden}`)));
-      continue;
-    }
-    const gEl = el("g", { class: "node", tabindex: "0", role: "button" });
-    gEl.append(el("rect", {
-      x: p.x, y: p.y, width: p.w, height: p.d, rx: 8,
-      fill, stroke: ink, "stroke-width": 1.2,
-    }));
-    const room = Math.max(6, Math.floor((p.w - 18) / 6.6));
-    const label = nd.label.length > room ? nd.label.slice(0, room - 1) + "…" : nd.label;
-    gEl.append(el("text", {
-      x: p.x + 11, y: p.y + 23, "font-size": 13, fill: ink, "font-weight": 600,
-    }, document.createTextNode(label)));
-    if (nd.params) {
-      gEl.append(el("text", {
-        x: p.x + 11, y: p.y + 41, "font-size": 11, fill: ink, opacity: .75,
-      }, document.createTextNode(`${fmt(nd.params)} params`)));
-    }
-    const act = () => onPick && onPick(nd, p);
-    gEl.addEventListener("click", act);
-    gEl.addEventListener("keydown", (e) => { if (e.key === "Enter") act(); });
-    root.append(gEl);
-  }
-
-  // --- branch captions ---
-  for (const [name, label] of [["vision", "vision branch"], ["text", "language stack"]]) {
-    if (!g.nodes.some((n) => n.branch === name)) continue;
-    const items = P.filter((p) => p.nd.branch === name);
-    const x = Math.min(...items.map((p) => p.x));
-    const y = Math.max(56, Math.min(...items.map((p) => p.y)) - 30);
-    root.append(el("text", { class: "branch", x, y }, document.createTextNode(label)));
-  }
-
-  return { placed: P, head: describe(g) };
 }

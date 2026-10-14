@@ -41,7 +41,8 @@ body {
 
 main { display: flex; min-height: calc(100vh - 52px); }
 .stage { flex: 1 1 auto; min-width: 0; position: relative; }
-#svg { display: block; width: 100%; height: calc(100vh - 52px); cursor: grab; }
+#svg { display: block; width: 100%; height: calc(100vh - 52px); cursor: grab;
+  touch-action: none; }
 #svg.drag { cursor: grabbing; }
 .hint[hidden], .err[hidden], .side[hidden] { display: none; }
 .hint {
@@ -63,10 +64,10 @@ main { display: flex; min-height: calc(100vh - 52px); }
   fill: var(--faint); font-size: 10.5px; letter-spacing: .1em;
   text-transform: uppercase;
 }
-.gap { stroke: var(--faint); stroke-width: 1.6; stroke-dasharray: 3 4; fill: none; }
+.gap { stroke: #6b7a66; stroke-width: 2; stroke-dasharray: 3 4; }
 .gap-n {
-  fill: var(--dim); font-size: 11px; font-family: ui-monospace, monospace;
-  paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
+  fill: #4a5a45; font-size: 11px; font-family: ui-monospace, monospace;
+  paint-order: stroke; stroke: #e9f1e4; stroke-width: 3.5px; stroke-linejoin: round;
 }
 .dots { fill: var(--faint); }
 
