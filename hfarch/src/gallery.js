@@ -1,32 +1,32 @@
 /**
  * The module gallery.
  *
- * Composing first and judging afterwards does not work: a module that looks
- * fine alone can be unreadable in a row of twelve, and a layout mistake gets
- * mistaken for a bad module. So every piece is built and looked at here, on its
- * own, at a size where its problems are obvious, before anything is assembled.
- *
- * It imports the same modules the renderer composes with. Nothing is
- * re-implemented here, so a cell cannot drift from what actually ships.
+ * Each element drawn alone, at a size where its problems are obvious, before
+ * anything is composed. Imports the same modules the renderer composes with,
+ * so a cell cannot drift from what ships.
  */
-import { KINDS, box, el, iso } from "./iso.js";
-import { edges, elision, plate, residual, tower, wire } from "./modules.js";
+import { el, txt } from "./prim.js";
+import { block, defs, plate, residual, tower, wire } from "./modules.js";
 
 const NS = "http://www.w3.org/2000/svg";
 
 const CELLS = [
-  ["block", "a plain component — three faces, solid enough to read as a volume",
-    (r) => box(r, { x: 60, y: 20, z: 0, w: 74, d: 46, h: 60, color: KINDS.embed })],
-  ["tower", "a repeated block, sectioned — one block, faces divided by sub-layer",
-    (r) => tower(r, {})],
-  ["plate", "an input plate — one sheet per token, the current one pulled out",
-    (r) => plate(r, {})],
-  ["elision", "first … ×N … last", (r) => elision(r, {})],
-  ["residual", "the bypass and the add where it rejoins", (r) => residual(r, {})],
-  ["wire", "a connection, orthogonal, tensor written underneath",
-    (r) => wire(r, { p0: iso(90, 10, 0), p1: iso(250, 70, 0),
-      shape: ["B", "T", 4096], head: "url(#gh)" })],
-  ["edges", "dimensions on the three edges they measure", (r) => edges(r, {})],
+  ["block", "a plain component — name, count, parameter share",
+    (g) => block(g, { x: 30, y: 30, w: 180, h: 104, label: "Token embedding",
+      sub: "622.3M parameters", kind: "embed", dims: { width: 4096 } })],
+  ["tower", "a repeated block — count on the card, sub-layers inside",
+    (g) => tower(g, { x: 30, y: 20, w: 180, h: 104, label: "Decoder block",
+      sub: "192.9M each · 6.95B total", count: 36,
+      parts: [{ label: "norm", kind: "norm" }, { label: "attn", kind: "attention" },
+        { label: "mlp", kind: "mlp" }],
+      weights: [1, 34, 49] })],
+  ["plate", "an input plate — one bar per token, one pulled out",
+    (g) => plate(g, { x: 30, y: 24, w: 180, h: 104, label: "Tokens", shape: "B×T" })],
+  ["residual", "the bypass and the add where it rejoins",
+    (g) => residual(g, { x: 40, y: 60, w: 180, h: 104 })],
+  ["wire", "a connection — straight when level, one bend when not",
+    (g) => wire(g, { p0: [200, 40], p1: [340, 40], shape: "B×T×4096" })
+      || wire(g, { p0: [200, 130], p1: [340, 130], shape: "S×1152" })],
 ];
 
 const host = document.getElementById("cells");
@@ -35,11 +35,7 @@ for (const [name, note, draw] of CELLS) {
   wrap.className = "cell";
   wrap.id = `cell-${name}`;
   const svg = document.createElementNS(NS, "svg");
-  svg.append(el("defs", {}, [
-    el("marker", { id: "gh", viewBox: "0 0 10 10", refX: "8.6", refY: "5",
-      markerWidth: "4.2", markerHeight: "4.2", orient: "auto-start-reverse" },
-      [el("path", { d: "M 0 2 L 9 5 L 0 8 z", fill: "#8fa787" })]),
-  ]));
+  svg.append(defs());
   const root = el("g", {});
   svg.append(root);
   draw(root);
@@ -52,15 +48,13 @@ for (const [name, note, draw] of CELLS) {
   p.textContent = note;
   wrap.append(p);
   host.append(wrap);
-
-  // The viewBox has to be measured *after* the cell is in the document.
-  // getBBox on a detached SVG throws or returns zeroes, and the failure is
-  // silent: the bounds stay Infinity and the cell renders as a crop of
-  // nothing, which is exactly what happened the first time.
+  // measured only after the cell is in the document: getBBox on a detached
+  // SVG throws, and the failure is silent -- the cell renders as a crop of
+  // nothing.
   const bb = root.getBBox();
   svg.setAttribute("viewBox",
-    `${(bb.x - 30).toFixed(0)} ${(bb.y - 24).toFixed(0)} `
-    + `${(bb.width + 60).toFixed(0)} ${(bb.height + 48).toFixed(0)}`);
+    `${(bb.x - 24).toFixed(0)} ${(bb.y - 20).toFixed(0)} `
+    + `${(bb.width + 48).toFixed(0)} ${(bb.height + 40).toFixed(0)}`);
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 }
 

@@ -61,7 +61,8 @@ export function build(cfg) {
       id: "ids", label: "Tokens", kind: "tensor", params: 0, branch: "text",
       // drawn as a plate: one thin sheet per token, one of them pulled out as
       // the vector actually being read this step
-      plate: { count: 8, unit: "token", shape: ["B", "T"], width: hidden, note: "each sheet is one token's vector" },
+      plate: { count: 8, unit: "token", title: "Tokens", shape: ["B", "T"], width: hidden,
+        note: "one bar per token; the highlighted one is being read" },
       note: "the integers the model reads",
     },
     {
@@ -72,15 +73,15 @@ export function build(cfg) {
   ];
   const edges = [
     { from: "ids", to: "embed", shape: ["B", "T"] },
-    { from: "embed", to: "blocks", shape: ["B", "T", hidden] },
-    { from: "blocks", to: "norm", shape: ["B", "T", hidden] },
-    { from: "norm", to: "head", shape: ["B", "T", hidden] },
-    { from: "head", to: "logits", shape: ["B", "T", vocab || "V"] },
+    { from: "embed", to: "blocks", shape: ["B", "T"] },
+    { from: "blocks", to: "norm", shape: ["B", "T"] },
+    { from: "norm", to: "head", shape: ["B", "T"] },
+    { from: "head", to: "logits", shape: ["B", "T"] },
     { from: "logits", to: "sample" },
   ];
   nodes.push(
     {
-      id: "blocks", label: `Decoder block ×${layers}`, kind: "stack", params: per * layers,
+      id: "blocks", label: "Decoder block", kind: "stack", params: per * layers,
       branch: "text", repeat: layers, template: inner,
       dims: { layers, width: hidden },
       note: pos.kind === "RoPE" ? `every block is identical; positions by ${pos.note}` : `every block is identical`,
@@ -107,13 +108,13 @@ export function build(cfg) {
     nodes.push(
       {
         id: "img", label: "Image", kind: "tensor", params: 0, branch: "vision",
-        plate: { count: 8, unit: "patch", shape: ["B", 3, "T", "H", "W"], width: vis.hidden,
-          note: `each sheet is one ${vis.patch}px patch` },
+        plate: { count: 8, unit: "patch", title: "Image", shape: ["B", 3, "T", "H", "W"],
+          width: vis.hidden, note: `one bar per ${vis.patch}px patch` },
         note: vis.note,
       },
       { id: "patch", label: "Patch embed", kind: "embed", params: vis.merge,
         branch: "vision", dims: { width: vis.hidden } },
-      { id: "vblocks", label: `Vision block ×${vis.layers}`, kind: "stack",
+      { id: "vblocks", label: "Vision block", kind: "stack",
         params: vis.blocks, branch: "vision", repeat: vis.layers,
         dims: { layers: vis.layers, width: vis.hidden },
         note: "the same shape in every block",
@@ -129,8 +130,8 @@ export function build(cfg) {
     );
     edges.push(
       { from: "img", to: "patch", shape: ["H", "W", vis.patch] },
-      { from: "patch", to: "vblocks", shape: ["S", vis.hidden] },
-      { from: "vblocks", to: "merger" },
+      { from: "patch", to: "vblocks", shape: ["S"] },
+      { from: "vblocks", to: "merger", shape: ["S"] },
       { from: "merger", to: "vtok", shape: ["S", hidden] },
       { from: "vtok", to: "blocks" },
     );

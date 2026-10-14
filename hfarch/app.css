@@ -104,6 +104,33 @@ main { display: flex; min-height: calc(100vh - 52px); }
 }
 .warm { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: .45 } 50% { opacity: 1 } }
+/* ---- the diagram, flat ---- */
+.wire { fill: none; stroke: #7f9478; stroke-width: 2; stroke-linecap: round;
+  stroke-linejoin: round; }
+.wire-t { fill: #4e5f47; font-size: 13px; font-family: ui-monospace, monospace;
+  paint-order: stroke; stroke: #f2f6ef; stroke-width: 4px; stroke-linejoin: round; }
+
+.resid { fill: none; stroke: #b98a4e; stroke-width: 2; stroke-linejoin: round; }
+.sum { fill: #f0c860; stroke: #a8873a; stroke-width: 1.2; }
+.sum-t { fill: #4a3a10; font-size: 15px; font-weight: 800; }
+
+/* card text: this is the whole reason the projection went */
+.card-t { fill: #1e2b1a; font-size: 15px; font-weight: 700; }
+.card-s { fill: #43523d; font-size: 12.5px; }
+.card-d { fill: #5f7057; font-size: 11px; font-family: ui-monospace, monospace; }
+.badge-t { fill: #ffffff; font-size: 12.5px; font-weight: 800;
+  font-family: ui-monospace, monospace; }
+.band-t { fill: #ffffff; font-size: 10px; font-weight: 700;
+  paint-order: stroke; stroke: rgba(0,0,0,.18); stroke-width: 2px; }
+.plate-t { fill: #2e8b4c; font-size: 12px; font-weight: 800;
+  font-family: ui-monospace, monospace; }
+
+.lane-t { fill: #5d7054; font-size: 12px; font-weight: 700; letter-spacing: .11em;
+  text-transform: uppercase; }
+.cap { fill: #6f7f68; font-size: 13px; }
+.node { cursor: pointer; }
+.node:hover rect:nth-of-type(2) { stroke: #2f7d4f; stroke-width: 2.4; }
+
 /* ---- status bar ---- */
 .status {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
