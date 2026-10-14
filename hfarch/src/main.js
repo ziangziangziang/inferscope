@@ -2,6 +2,9 @@ import { age, cacheGet, cachePut, fmt, getModel, recent } from "./hub.js";
 import { build } from "./graph.js";
 import { render } from "./render.js";
 
+const MODE_KEY = "hfarch.mode";
+const mode = () => localStorage.getItem(MODE_KEY) === "3d" ? "3d" : "2d";
+
 const $ = (id) => document.getElementById(id);
 
 /**
@@ -117,9 +120,9 @@ function draw(cfg, repo, host, how) {
   const g = build(cfg);
   step = 2;
   status("working", "drawing", STEPS, `${g.nodes.length} components · ${elapsed()}`);
-  last = g;
+  last = g; last.cfg = cfg; last.repo = repo; last.host = host;
   $("src").textContent = `${(host || "").replace("https://", "")} · config.json only`;
-  const { head } = render(svg, g, (nd) => show(nd));
+  const { head } = render(svg, g, (nd) => show(nd), mode());
   $("sum").textContent = head;
   side.hidden = true;
   const named = g.nodes.filter((n) => n.repeat).map((n) => `${n.repeat}×`);
@@ -136,6 +139,19 @@ $("go").addEventListener("submit", (e) => {
 });
 $("close").addEventListener("click", () => { side.hidden = true; });
 
+function syncMode() {
+  const b = $("mode");
+  const on = mode() === "3d";
+  b.textContent = on ? "2D" : "3D";
+  b.setAttribute("aria-pressed", String(on));
+  b.title = on ? "switch to the flat drawing" : "switch to the 3D drawing";
+}
+$("mode").addEventListener("click", () => {
+  localStorage.setItem(MODE_KEY, mode() === "3d" ? "2d" : "3d");
+  syncMode();
+  if (last) draw(last.cfg, last.repo, last.host, "re-drawn");
+});
+syncMode();
 fillRecent();
 
 const initial = decodeURIComponent(location.hash.slice(1));

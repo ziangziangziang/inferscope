@@ -28,13 +28,70 @@ export const KINDS = {
   moe: "#b8792f",
 };
 
-/** A colour light enough to carry black text on. */
-export const soft = (hex, amt) => {
+export const poly = (pts) =>
+  pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+
+export const tint = (hex, amt) => {
   const n = parseInt(hex.slice(1), 16);
   const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) =>
     Math.round(v + (255 - v) * amt));
   return `#${ch.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 };
+
+/** A colour light enough to carry black text on. */
+export const soft = tint;
+
+/* ---- the optional isometric projection ----
+ *
+ * The 3D mode is the same grid seen through a camera, not a different layout:
+ * a component's grid cell becomes a world cell, and nothing else changes. So
+ * the two modes cannot disagree about order, alignment or which block feeds
+ * which -- only about how it is drawn.
+ *
+ * Every card sits at z = 0, the same altitude. That is deliberate: the input
+ * and the output are the two ends of the pipeline and a reader should be able
+ * to look straight across the diagram from one to the other. An earlier version
+ * dropped altitude a step per stage, which looked handsome and put the input
+ * at the top of the page and the output at the bottom, so the two ends of the
+ * same flow were as far apart as the page allowed.
+ */
+const COS30 = Math.cos(Math.PI / 6);
+const SIN30 = 0.5;
+
+export const iso = (x, y, z) => [(x - y) * COS30, (x + y) * SIN30 - z];
+
+/** A three-face box, opaque and tinted: lid lightest, left mid, right darkest. */
+export function isoBox(g, { x, y, z, w, d, h, color, top = 0.30, left = 0.0,
+  right = -0.13, stroke = INK, sw = 0.9 }) {
+  const x1 = x + w, y1 = y + d, z1 = z + h;
+  g.append(el("polygon", {
+    points: poly([iso(x, y1, z), iso(x, y1, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
+    fill: tint(color, left), stroke, "stroke-width": sw,
+  }));
+  g.append(el("polygon", {
+    points: poly([iso(x1, y, z), iso(x1, y, z1), iso(x1, y1, z1), iso(x1, y1, z)]),
+    fill: tint(color, right), stroke, "stroke-width": sw,
+  }));
+  g.append(el("polygon", {
+    points: poly([iso(x, y, z1), iso(x1, y, z1), iso(x1, y1, z1), iso(x, y1, z1)]),
+    fill: tint(color, top), stroke, "stroke-width": sw,
+  }));
+}
+
+/** A horizontal division across the two visible faces, at height za. */
+export function isoRule(g, { x, y, z, w, d }) {
+  const x1 = x + w, y1 = y + d;
+  g.append(el("line", {
+    class: "rule",
+    x1: iso(x, y1, z)[0], y1: iso(x, y1, z)[1],
+    x2: iso(x1, y1, z)[0], y2: iso(x1, y1, z)[1],
+  }));
+  g.append(el("line", {
+    class: "rule",
+    x1: iso(x1, y, z)[0], y1: iso(x1, y, z)[1],
+    x2: iso(x1, y1, z)[0], y2: iso(x1, y1, z)[1],
+  }));
+}
 
 export function el(tag, attrs = {}, kids) {
   const e = document.createElementNS("http://www.w3.org/2000/svg", tag);

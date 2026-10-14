@@ -146,3 +146,84 @@ export function defs() {
 }
 
 void INK;
+/* ------------------------------------------------------------------ *
+ * The 3D card. Same grid, same ordering, seen through a camera.
+ * ------------------------------------------------------------------ */
+import { iso, isoBox, isoRule } from "./prim.js";
+
+/**
+ * A component as a solid.
+ *
+ * The label goes on the *front face*, upright and unrotated, which is where
+ * Box.sty puts its caption. Rotating text into the face's perspective is what
+ * made the isometric version unreadable; putting it on the face and leaving it
+ * horizontal keeps the solid and recovers the text.
+ */
+export function isoCard(g, { x, y, z = 0, w, d, h, label, sub, count = 0,
+  kind = "tensor", parts = [], weights = [] }) {
+  // start from a light tint of the hue: the faces are then all light and
+  // the dark label on the front face reads on every one of them
+  const base = soft(KINDS[kind] || KINDS.tensor, 0.66);
+  isoBox(g, { x, y, z, w, d, h, color: base });
+
+  // front face: the plane at y+d, spanning x..x+w and z..z+h
+  const face = iso(x + w / 2, y + d, z + h * 0.42);
+  const room = Math.max(4, Math.floor((w * 0.86) / (12.5 * 0.56)));
+  const title = label.length > room ? label.slice(0, room - 1) + "…" : label;
+  g.append(txt(face[0], face[1], title,
+    { class: "iso-t", "text-anchor": "middle" }));
+  if (sub) {
+    g.append(txt(face[0], face[1] + 15, sub, { class: "iso-s", "text-anchor": "middle" }));
+  }
+
+  // the count, on a badge above the block so it never fights the label
+  if (count) {
+    const p = iso(x + w - 16, y + d - 10, z + h + 10);
+    g.append(el("circle", { class: "iso-badge", cx: p[0], cy: p[1], r: 15 }));
+    g.append(txt(p[0], p[1] + 5, `×${count}`, { class: "iso-badge-t", "text-anchor": "middle" }));
+  }
+
+  // a repeated block's composition, as divisions across its two visible faces
+  if (parts.length && h >= 60) {
+    const tot = weights.reduce((a, b) => a + b, 0) || 1;
+    const FLOOR = 0.08;
+    const free = Math.max(0, 1 - FLOOR * parts.length);
+    let zz = 0;
+    parts.forEach((p, i) => {
+      zz += (FLOOR + ((weights[i] || 1) / tot) * free) * h;
+      if (i < parts.length - 1) isoRule(g, { x, y, z: z + zz, w, d });
+    });
+  }
+}
+
+/** A plate as a standing deck of sheets, the current one pulled forward. */
+export function isoPlate(g, { x, y, z = 0, w, d, h, label, shape, count = 7, focus = 3 }) {
+  const base = soft(KINDS.tensor, 0.6);
+  const rows = Math.max(4, Math.min(count, 7));
+  const gap = 1.5;
+  const bh = Math.max(4, (h - 16 - gap * (rows - 1)) / rows);
+  for (let i = 0; i < rows; i++) {
+    const on = i === focus;
+    isoBox(g, {
+      x: x + (on ? -10 : 0), y: y + (on ? d + 7 : i * ((d * 0.7) / rows)),
+      z, w: on ? w * 0.78 : w * 0.7, d: (d * 0.7) / rows - 1,
+      h: bh, color: on ? soft(KINDS.embed, 0.5) : base, top: 0.4, sw: 0.6,
+    });
+  }
+  const p = iso(x + w * 0.4, y + d + 12, z + h * 0.5);
+  g.append(txt(p[0], p[1], label, { class: "iso-t", "text-anchor": "middle" }));
+  if (shape) {
+    g.append(txt(p[0], p[1] + 14, shape, { class: "iso-s", "text-anchor": "middle" }));
+  }
+}
+
+/** The residual, and the add where it rejoins — the same operator, in 3D. */
+export function isoResidual(g, { x, y, z = 0, w, d, h }) {
+  const a = iso(x - 10, y + d / 2, z);
+  const b = iso(x + w + 10, y + d / 2, z);
+  const top = a[1] - 18;
+  g.append(el("path", { class: "resid",
+    d: `M ${a[0]} ${a[1]} L ${a[0]} ${top} L ${b[0]} ${top} L ${b[0]} ${b[1]}` }));
+  g.append(el("circle", { class: "sum", cx: b[0], cy: top, r: 11 }));
+  g.append(txt(b[0], top + 5, "+", { class: "sum-t", "text-anchor": "middle" }));
+}
