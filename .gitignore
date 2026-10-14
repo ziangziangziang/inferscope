@@ -32,3 +32,4 @@ shots*/
 .idea/
 .vscode/
 *.swp
+hfarch/test/cfg/google_*.json
