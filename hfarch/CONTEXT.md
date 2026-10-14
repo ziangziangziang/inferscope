@@ -1,277 +1,184 @@
 # Context for the next agent
 
-Read this before changing anything. It records what the two projects are for,
-how they connect, and — more usefully — which parts of this setup will waste
-your time if you do not know about them.
+Read this before changing anything. It records where hfarch stands now, what
+was just done and why, and which parts of this setup will waste your time if
+you do not know about them. The repository-wide context (both projects, the
+GPU box, deployment) is in `../CONTEXT.md`.
 
 ---
 
 ## 1. What this is
 
-One repository, two related projects.
+A browser-only viewer for Hugging Face model architectures. Type a model name,
+get a picture of what is inside it. No backend, no build step, no weights: a
+model's shape is declared in `config.json`, and the Hub serves it with
+permissive CORS, so it runs client-side — on networks where the browser can
+reach the Hub. On networks where it cannot, `serve.py` adds one narrow
+same-origin route that reads the same three metadata files server-side.
 
-### InferScope — the workbench (`https://inferscope.radeon.firstdg.ai`)
+Two invariants, and they are the whole point of the project:
 
-An inference-observability workbench for the GPU box. It runs models, watches
-them, and draws what it finds: a live GPU rail, a bounded collector writing
-Parquet, per-engine views for chat / ASR / TTS / image / video, and an
-architecture view of whichever model is loaded.
+- Every number is **derived from a config, or measured at runtime**. Never
+  estimated to match a published figure.
+- Whatever is not known is **shown as not known**. Where a config is silent
+  (a diffusers feed-forward, CLIP's colour channels), the card says so. The
+  U-Net total reads 382M against a published ~860M on purpose. Do not "fix"
+  it by guessing.
 
-Its reason for existing: **inference is opaque**. You can see a GPU is busy
-and a token rate is coming out, but not what the machine is actually doing, how
-the model is shaped, or whether a number in a config is real. InferScope tries
-to make the path from a prompt to a kernel trace visible and honest about its
-provenance.
+## 2. Current state — what changed last session
 
-### Model Atlas / `hfarch` — the architecture viewer (`…/hfarch`)
+The GPU box is gone; this now runs locally only.
 
-The first step of the current work. Type a Hugging Face model name, get a
-picture of what is inside it. Runs entirely in the browser: a model's shape is
-declared in its `config.json`, the Hub serves that with permissive CORS, so no
-weights, no backend, no build step.
+**The Hub failure is legible and the app works on this network.**
+`huggingface.co` is unreachable here and `hf-mirror.com` answers its CDN
+redirect with `Access-Control-Allow-Origin: https://hf-mirror.com`, so a
+browser on localhost gets nothing and used to report it as a silent
+`TypeError`. Now:
 
-It is deliberately a *separate* app rather than another tab in the workbench,
-because it answers a different question. InferScope describes **the model you
-are running**. hfarch describes **any model you can name**, including ones that
-were never downloaded and will never run on this box. The shared part is the
-idea: every number shown is derived from a config or measured at runtime, and
-anything unknown is reported as unknown.
+- `src/hub.js` classifies every failure (unreachable / cors / timeout /
+  gated / missing / no route on this server) — a no-cors probe tells "the
+  network is fine and the refusal is CORS" apart from "unreachable".
+- A failed load shows a panel: each host tried, what it answered, how long it
+  took, and the remedies. It stays up until the next load.
+- `serve.py` (stdlib only, binds 127.0.0.1) serves the static files plus
+  `/api/hf/config?repo=owner/name[/subfolder]`, reading config.json with
+  urllib, where the network is fine. Deliberately narrow: three filenames,
+  two allowlisted hosts, segments validated so no `..` can get through.
+- The per-host outcome is remembered in localStorage; once the Hub is known
+  blocked, the origin route is tried first (seconds instead of 25+).
+- A `config.json` from this machine works: drop it anywhere on the page, or
+  use the *open a config.json* button. The source line says where the config
+  came from — cached, hub host, this server's route, or a dropped file.
+- Repo names may carry one subfolder (`facebook/DiT-XL-2-256/transformer`),
+  which is how diffusers pipelines expose their parts.
 
-**Current assignment: improve hfarch.** Treat everything below as the
-starting point.
+**Row wrapping.** Single-lane diagrams used to letterbox (a language model
+read 8.6:1). `layout()` now flows each lane's columns into rows of a width
+chosen to land the whole diagram near the window's aspect (target 1.62, never
+wrapping if it fits 3.1 unwrapped). Column pitch is untouched, so columns
+align across rows; reading order is untouched. The connector out of a row's
+end goes round the right margin and back along the gutter — `wrapWire`.
+Lane-to-lane joins drop into the target's top edge (`dropWire`), or round the
+margin when lanes intervene (`marginDrop`). U-Net skips route through the row
+gutters. Both 2D and 3D share this layout; in 3D a wrapped row is a step back
+in depth.
 
----
+**New families.** Text encoders, CLIP, and DiT are built now:
 
-## 2. Connection strings
+- `encoder` — CLIPTextModel, BERT-style base models. No output head, no
+  logits, no sampling; the drawing ends at the vector it emits.
+- `contrastive` — CLIPModel. Two towers, each ending in a projection, meeting
+  in a shared space with the one learned logit-scale parameter. SD's
+  text encoder config (`sd-clip-text.json`) is the `encoder` case; the full
+  CLIP configs are the `contrastive` case.
+- `dit` — diffusers `Transformer2DModel` over patches: DiT, PixArt. Width is
+  derived as `num_attention_heads × attention_head_dim`. The feed-forward is
+  undeclared in these configs and is not counted (DiT-XL/2 reads 375.8M
+  against a published 675M; the card says why). PixArt's `ada_norm_single`
+  carries a learned position table and a caption projection; DiT's
+  `ada_norm_zero` carries a fixed sin-cos grid.
 
-| what | value |
-|---|---|
-| git remote | `git@github.com:ziangziangziang/inferscope.git` (branch `main`) |
-| ssh to the GPU box | `root@36.150.116.206`, port `31699` |
-| deployed source | `/workspace/inferscope/` on that box |
-| public URL | `https://inferscope.radeon.firstdg.ai` |
-| hfarch URL | `https://inferscope.radeon.firstdg.ai/hfarch/` |
-| local checkout | `/Users/zziang/Documents/projects/test/test/inferscope` |
+**Corrections to shared formulas** (all landed by the tests, none by eye):
 
-Egress from the box is **only** through a cluster proxy. Neither the server nor
-a browser on this network can reach `huggingface.co` directly:
+- `norm()` now counts a LayerNorm as 2×width (scale *and* shift) and RMSNorm
+  as 1×width. Whisper's builder had been declaring `rms_norm_eps` to reuse
+  the formula, which silently halved every norm the model has.
+- `vision()`'s per-block norm width follows the same rule, and the VLM vision
+  template in `graph.js` uses `vis.nnW` so the template × count check holds.
 
-```
-http://notebook-egress-proxy.amd-oneclick-lablab.svc.cluster.local:3128
-```
+Counts now land: CLIP ViT-L/14 at 427,310,849 against a published
+427,616,846 (−0.07%, the undeclared biases); SD's text encoder at 123.0M
+against ~123M; PixArt at 308.4M + its undeclared feed-forward ≈ 611.8M
+published.
 
-Note `lablab`, not `lab`. This is set in `run.sh`, which is **not in the repo**.
-
-GPU box, for context: ~48 GiB VRAMD, ~500 GiB RAM. One heavy engine at a time —
-chat `8081`, ASR `8082`, TTS `8083`, image `8084`, video `8085`; llama.cpp is
-owned by `chat.py`. `/workspace` is small (~24 GiB free), so large models live
-on the root overlay under `/models` and are **not** persistent.
-
----
-
-## 3. Repository layout
-
-```
-inferscope/            backend package (FastAPI, collectors, engines)
-  api.py               REST + SSE, static frontend mount, /api/hf/config
-  chat.py asr_engine.py tts_server.py image_server.py video_server.py
-  enginectl.py         load/offload/ownership for the non-chat engines
-  gguf.py gguf_arch.py diffusers_arch.py asr_arch.py   architecture builders
-ui/                    React + Vite workbench
-  src/components/iso.tsx       the isometric camera — read this first
-  src/components/sceneModel.ts caption layout rules
-hfarch/                the browser viewer (no build step, plain ES modules)
-archviz/               standalone architecture CLI (earlier, partly superseded)
-tests/                 14 pytest files
-```
-
-**`ui/src/components/iso.tsx` is the reference for anything visual.** hfarch
-deliberately uses the same camera (`iso(x,y,z)`), the same three-face boxes, the
-same painter's ordering and the same ground, so the two views of the same model
-look like one product.
-
----
-
-## 4. hfarch in detail
-
-Four source files, ~700 lines total.
+## 3. Layout of the source
 
 | file | role |
 |---|---|
-| `src/blocks.js` | the component library and every parameter formula |
-| `src/graph.js` | config → flow graph; vision branch, MoE, elision markers |
-| `src/hub.js` | fetching `config.json`, mirror failover, origin fallback |
-| `src/render.js` | isometric layout, connections, captions, pan/zoom |
+| `src/blocks.js` | component library, parameter formulas, `family()` |
+| `src/families.js` | speech, diffusion, VAE, DiT, encoder, contrastive builders |
+| `src/graph.js` | config → flow graph; dispatches to the family builders |
+| `src/hub.js` | classified Hub failures, origin route, localStorage cache |
+| `src/prim.js` | primitives: cards, wires, wrap/skip/drop routes, bounds |
+| `src/modules.js` | the drawing modules (flat + 3D), shared with the gallery |
+| `src/render.js` | layout (stages, lanes, wrapping), 2D and 3D renderers |
+| `src/main.js` | status line, error panel, drop-a-file, mode toggle |
+| `serve.py` | static server + `/api/hf/config`, 127.0.0.1 only |
+| `test/graph.test.mjs` | counts against published sizes; template × count |
+| `test/shoot.py` | browser screenshots + in-DOM assertions (playwright) |
+| `test/cfg/` | real configs fetched from the Hub by curl, incl. a gated 403 |
+| `gallery.html` | each drawing module alone; compose only once parts look right |
 
-### The component library is the substance of the project
-
-Transformers are assembled from the same handful of parts, so the drawing is
-assembled from the same vocabulary. `blocks.js` has one entry per part —
-attention, grouped-query attention, gated feed-forward, RMSNorm, rotary
-positions, mixture of experts, patch embedding, merger, tied output head — each
-knowing which config keys describe it and how many parameters it holds. A model
-nobody has seen still draws from its config alone.
-
-### The parameter formulas are where a diagram goes quietly wrong
-
-They are written out deliberately:
-
-- attention is sized by **key/value** heads, not query heads;
-- SwiGLU-family feed-forward has **three** matrices where plain GELU has two;
-- biases counted only when the config declares them;
-- a tied embedding and output head are **one** matrix.
-
-Two Mixture-of-Experts traps, both found by the test suite, both large:
-
-1. **Experts replace the dense feed-forward block; they do not sit beside it.**
-   Counting both turned Qwen3-30B-A3B into a 235B model.
-2. **Experts are sized by `moe_intermediate_size` (768), not
-   `intermediate_size` (6144).** Reading the wrong one is an 8× error.
-
-Counts currently land on the published sizes: 4.02B / 4.0B, 30.53B / 30.5B,
-8.46B / ~8.2B.
-
-### Running it
+## 4. How to run and verify
 
 ```
-cd hfarch && python3 -m http.server 8811     # any static server
-node test/graph.test.mjs                     # parameter counts vs published sizes
+python3 serve.py 8811                 # then open http://localhost:8811
+node test/graph.test.mjs              # the arithmetic, no dependencies
+python3 test/shoot.py                 # draw every family, 2D
+python3 test/shoot.py --mode 3d       # and 3D
 ```
 
-There is no build step and no dependency install. ES modules need `http://`,
-not `file://`.
+`shoot.py` uses playwright with `--no-proxy-server` — this sandbox exports
+`HTTP_PROXY`, which puts `127.0.0.1` through a proxy that answers for it, and
+that proxy has cost real debugging time already. Chromium headless shell is
+installed under `~/Library/Caches/ms-playwright/`.
 
-### Deployment
+`shoot.py` asserts, in the live DOM: every card inside the viewBox (all four
+corners), no label truncated with an ellipsis, no text wider than its card,
+and aspect inside a usable range. It also screenshots into `test/shots/` —
+look at them; several bugs here were invisible in code and obvious in a
+picture.
 
-`hfarch/` is copied into `ui/dist/hfarch/` **after every build**, by
-`ui/scripts/copy-hfarch.mjs` (wired into `npm run build`). Vite empties
-`dist/`, so without that step a rebuild silently deletes `/hfarch`.
+The rest of the old verification advice still applies: a test stub injected
+via `addInitScript` cannot use top-level await, and `new Response(obj)` needs
+`JSON.stringify`. Either mistake surfaces as "config.json not readable".
 
-```
-npm --prefix ui run build          # builds UI + copies hfarch
-rsync -az -e "ssh -p 31699" hfarch/ root@36.150.116.206:/workspace/inferscope/hfarch/
-rsync -az --delete -e "ssh -p 31699" hfarch/ \
-  root@36.150.116.206:/workspace/inferscope/ui/dist/hfarch/
-```
+## 5. Decisions made, and the reasoning
 
-Restart the app (see the trap in §7).
+- **`serve.py` instead of a proxy in the page.** A page-side proxy cannot
+  exist (CORS is enforced by the browser); a server-side read can. The route
+  is narrower than the one the old GPU box ran: same three filenames, but
+  subfolders allowed, segments validated against `[A-Za-z0-9][\w.-]*`, bound
+  to 127.0.0.1, answers cached per repo in memory.
+- **Origin-first once the Hub is known blocked.** Direct attempts still
+  happen first on a fresh browser (the Hub is the honest source), but each
+  host's outcome is remembered, and a known-blocked Hub no longer costs two
+  timeouts per load.
+- **Biases stay uncounted unless declared**, even though CLIP's biases are
+  certain. The rule is what keeps the count trustworthy on models nobody has
+  checked; 0.07% on CLIP is the price, and it is stated on the record here.
+- **`archviz/` stays, explicitly superseded.** It is a CLI that emits JSON
+  and markdown tables — a different output from a different era, but small,
+  working, and sometimes the right shape for the job. Delete it if you find
+  yourself fixing a bug in it rather than in hfarch.
+- **The joint "Shared space" node is its own lane**, so both towers drop into
+  it without a lane's cards sitting between a tower and its target.
 
----
+## 6. Traps — each one cost real time and none is visible in the source
 
-## 5. How to verify a change
-
-Use a browser. `node test/graph.test.mjs` covers the arithmetic; nothing covers
-how it looks.
-
-**The remote browser is broken.** Chromium on the GPU box crashes on *any*
-page, including a static one — not an app bug, the host. Install Playwright's
-Chromium locally instead:
-
-```
-python3 -m playwright install chromium
-```
-
-**Testing against a stub.** From this machine `huggingface.co` is unreachable
-and the mirror's CDN redirect drops CORS, so a live fetch never completes in the
-browser. Inject a stub before the module loads:
-
-```js
-// init script: return a local config for any config.json request
-(function(){var CFG=<contents of test/cfg/….json>;var real=window.fetch;
-window.fetch=async function(u){var s=String(u);
-if(s.indexOf('config.json')>=0)return new Response(JSON.stringify(CFG),
-  {headers:{'Content-Type':'application/json'}});
-return real(u);};})();
-```
-
-Two traps here, both hit already: an init script cannot use top-level `await`,
-and `new Response(CFG)` where `CFG` is a JS **object** stringifies to
-`[object Object]` — you need `JSON.stringify(CFG)`. Either one fails as
-`config.json not readable`, which looks like a config problem.
-
-**Screenshot, then look.** Several bugs in this project were invisible in code
-and obvious in a picture: cells collapsed into a dot because the patch helper
-used world-unit edges; a caption rendering as `GUAGE STACK` because the viewBox
-was computed before the captions reserved their space.
-
-Prefer assertions over eyeballing where possible — the connection check walks
-every path and asserts each segment moves on one axis only:
-
-```js
-const pts = [...document.querySelectorAll('#svg .edge')]
-  .flatMap(p => p.getAttribute('d').match(/-?[\d.]+/g).map(Number));
-```
-
----
-
-## 6. Open issues in hfarch
-
-Ordered by how much they hurt.
-
-1. **Only transformer families are drawn.** `family()` detects diffusion UNets,
-   VAEs and speech encoders but nothing renders them. This is the biggest gap —
-   these components already exist in `blocks.js`, they just are not wired.
-2. **The origin fallback is public and unauthenticated.** `/api/hf/config`
-   makes the server fetch URLs on a visitor's behalf. It is deliberately narrow
-   (three filenames, two allowlisted hosts, `owner/name` validated), but it is
-   still an outbound-fetch endpoint. Consider a token.
-3. **25-second worst case.** The browser tries two Hub hosts it cannot reach,
-   each burning a 5s timeout, before the origin fallback. Trying the origin
-   first when the browser is clearly sandboxed would cut most of it.
-4. **No fit-to-window on very large graphs.** The viewBox is computed from
-   projected geometry, which fits most models, but a 48-layer MoE plus a vision
-   tower runs wide.
-5. **Gated repos report badly.** The mirror answers `429` before it ever says
-   "gated", so the message is unhelpful.
-6. **Arrow heads clip.** Connections are drawn behind the blocks, so a head can
-   be hidden by the block it points at. Drawing edges above fixes the heads but
-   makes wires cross over blocks — a trade, not a clear win.
-7. **A parallel `archviz/` CLI exists** and is partly superseded by hfarch.
-   Decide whether to keep it before extending either.
-
----
-
-## 7. Traps
-
-**`run.sh` is not in the repo.** It lives only at
-`/workspace/inferscope/run.sh` and holds the environment: proxy, model paths,
-ports. Changes to it cannot be committed and will be lost if the box is
-rebuilt.
-
-**Never restart with `pgrep -f "inferscope serve"`.** That pattern matches the
-shell you are running it in, so you kill your own command and conclude the
-service is down. Use:
-
-```sh
-kill -9 $(ps -eo pid,cmd | grep "[i]nferscope serve" | awk '{print $1}')
-cd /workspace/inferscope && setsid ./run.sh > /tmp/inf.log 2>&1 < /dev/null & disown
-```
-
-**The static mount is last.** `app.mount("/", StaticFiles(ui/dist))` catches
-everything, so a mistyped API path returns the UI's `index.html` with a 200 —
-not a 404. If a new endpoint 404s, check you registered it *above* the mount.
-
-**Do not trust a bare `except`.** A `{r.json()}` bug (building a *set*
-containing a dict) surfaced as `TypeError: unhashable type: 'dict'`, but a
-catch-all reported it as "config.json is not JSON" and sent me hunting the
-wrong host for several rounds. Name the exception.
-
-**Residual risk in the parameters, not the picture:** anything a config does
-not declare is reported as unknown rather than guessed. Keep it that way.
-
----
-
-## 8. Where to start
-
-Improve hfarch. In rough order of value:
-
-1. Wire the families that `family()` already detects (diffusion, speech). The
-   components exist; the renderer does not.
-2. Cut the 25s worst case by trying the origin first when the browser is
-   clearly sandboxed.
-3. Fit-to-window for wide graphs.
-4. Decide the fate of `/api/hf/config`, and of `archviz/`.
-
-Whatever you change, keep the two invariants that make this project worth
-trusting: every number is **derived from a config or measured at runtime**, and
-whatever is not known is **shown as not known**.
+- `txt()` is a CONSTRUCTOR, not an appender. Every call must be
+  `g.append(txt(...))`. Discarding the return value builds an element and
+  silently drops it; the drawing looks fine and all the text is missing.
+- Never name a helper `chrome`. `window.chrome` is a real object in every
+  Chromium browser: no error, no text.
+- `getBBox()` on a detached SVG throws or returns nothing, silently — bounds
+  stay Infinity and the cell renders as a crop of nothing. Measure only after
+  the node is in the document.
+- CSS `[hidden]` loses to a later `display:` rule. The `.why` panel has an
+  explicit `.why[hidden] { display: none }` for exactly this reason; keep it
+  when adding overlay panels.
+- `getBBox()` returns a rect whose `.x`/`.y` are already the min corner; do
+  not add `w`/`h` twice.
+- The Hub answers a gated repo with 403 and no CORS headers, so the browser
+  reports a *CORS* failure, not a 403 — the gate is only recognisable through
+  the server-side route. That is why `viaOrigin` matches `gated` against the
+  body's `detail` *and* its per-host detail.
+- `python3 -m http.server` answers `/api/hf/config` with a 404, which used to
+  surface as a generic failure; it is now its own diagnostic ("served by a
+  plain static server — restart as serve.py").
+- Playwright in this sandbox: launch with
+  `--no-proxy-server --proxy-server=direct:// --proxy-bypass-list=*`, or
+  localhost requests intermittently die with ERR_CONNECTION_RESET.
+- hf-mirror rate-limits bursts of config reads (HTTP 429 wrapped in an HTML
+  page). `serve.py` skips the two optional files when config.json fails, so a
+  dead repo costs one request per host rather than six.

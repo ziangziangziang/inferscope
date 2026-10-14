@@ -94,14 +94,21 @@ look like one product.
 
 ## 4. hfarch in detail
 
-Four source files, ~700 lines total.
+Nine source files, ~1,700 lines total. **Read `hfarch/CONTEXT.md` first** —
+it is the current, detailed record of the app's state, decisions and traps;
+the notes below are the short form.
 
 | file | role |
 |---|---|
-| `src/blocks.js` | the component library and every parameter formula |
-| `src/graph.js` | config → flow graph; vision branch, MoE, elision markers |
-| `src/hub.js` | fetching `config.json`, mirror failover, origin fallback |
-| `src/render.js` | isometric layout, connections, captions, pan/zoom |
+| `src/blocks.js` | the component library and every parameter formula, `family()` |
+| `src/families.js` | speech, diffusion, VAE, DiT, encoder and contrastive builders |
+| `src/graph.js` | config → flow graph; dispatches to the family builders |
+| `src/hub.js` | fetching `config.json`, classified failures, mirror failover, cache |
+| `src/prim.js` | drawing primitives: cards, wires, wrap/skip/drop routes |
+| `src/modules.js` | the drawing modules, shared with the gallery |
+| `src/render.js` | grid layout with row wrapping, 2D and 3D renderers |
+| `src/main.js` | status line, error panel, drop-a-config, mode toggle |
+| `serve.py` | static server + same-origin `/api/hf/config`, 127.0.0.1 only |
 
 ### The component library is the substance of the project
 
@@ -206,28 +213,25 @@ const pts = [...document.querySelectorAll('#svg .edge')]
 
 ## 6. Open issues in hfarch
 
-Ordered by how much they hurt.
+Ordered by how much they hurt. **Read `hfarch/CONTEXT.md` for the full
+state** — several items that used to live here (families that were detected
+but not drawn, the silent network failure, letterboxed single-lane diagrams,
+text encoders and DiT) are done as of October 2026.
 
-1. **Only transformer families are drawn.** `family()` detects diffusion UNets,
-   VAEs and speech encoders but nothing renders them. This is the biggest gap —
-   these components already exist in `blocks.js`, they just are not wired.
-2. **The origin fallback is public and unauthenticated.** `/api/hf/config`
-   makes the server fetch URLs on a visitor's behalf. It is deliberately narrow
-   (three filenames, two allowlisted hosts, `owner/name` validated), but it is
-   still an outbound-fetch endpoint. Consider a token.
-3. **25-second worst case.** The browser tries two Hub hosts it cannot reach,
-   each burning a 5s timeout, before the origin fallback. Trying the origin
-   first when the browser is clearly sandboxed would cut most of it.
-4. **No fit-to-window on very large graphs.** The viewBox is computed from
-   projected geometry, which fits most models, but a 48-layer MoE plus a vision
-   tower runs wide.
-5. **Gated repos report badly.** The mirror answers `429` before it ever says
-   "gated", so the message is unhelpful.
-6. **Arrow heads clip.** Connections are drawn behind the blocks, so a head can
-   be hidden by the block it points at. Drawing edges above fixes the heads but
-   makes wires cross over blocks — a trade, not a clear win.
-7. **A parallel `archviz/` CLI exists** and is partly superseded by hfarch.
-   Decide whether to keep it before extending either.
+1. **Very deep graphs may want more columns than fit at reading zoom.** They
+   wrap now, but a 48-layer MoE plus a vision tower still ends up wide; pan
+   and zoom cover it.
+2. **A gated repo is only recognisable through the local route.** The mirror
+   answers 403 without CORS headers, so the browser reports a CORS failure
+   and cannot see the reason; `serve.py` can see it and says so.
+3. **`/api/hf/config` is unauthenticated.** `serve.py` binds 127.0.0.1, three
+   filenames, two hosts, validated segments — but if this app is ever
+   deployed publicly again, that route needs a token or a real allowlist.
+4. **Arrow heads can clip behind blocks** when a wire passes over one; a
+   trade that has not been worth un-trading yet.
+5. **A parallel `archviz/` CLI exists** and is superseded, but kept: it emits
+   JSON/markdown tables, which is a different output. Delete it before
+   extending it.
 
 ---
 
@@ -265,12 +269,12 @@ not declare is reported as unknown rather than guessed. Keep it that way.
 
 Improve hfarch. In rough order of value:
 
-1. Wire the families that `family()` already detects (diffusion, speech). The
-   components exist; the renderer does not.
-2. Cut the 25s worst case by trying the origin first when the browser is
-   clearly sandboxed.
-3. Fit-to-window for wide graphs.
-4. Decide the fate of `/api/hf/config`, and of `archviz/`.
+1. Fit-to-window / column-count choice for very deep graphs.
+2. Wire `family()`'s `omni` case (audio_config) — still detected, still not drawn.
+3. More families: a T5-style encoder-decoder would slot into the speech
+   builder's shape with a different config surface.
+4. Deployment does not exist right now (the GPU box is gone). If the app ever
+   goes public again, `/api/hf/config` needs a token first.
 
 Whatever you change, keep the two invariants that make this project worth
 trusting: every number is **derived from a config or measured at runtime**, and
