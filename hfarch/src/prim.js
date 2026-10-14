@@ -167,17 +167,102 @@ export function wire(g, { p0, p1, shape = null, label = null, inset = 10 }) {
 }
 
 /**
+ * A row-wrap connection: the end of one row into the start of the next.
+ *
+ * The ordinary router cannot draw this. Its single bend sits at the midpoint
+ * of the two ends, and the next row starts at the far left, so the midpoint is
+ * back inside the row the wire is leaving: the run would cross every card
+ * between. A wrap leaves by the right margin, drops into the empty gutter
+ * between the rows, runs left along it, and enters the next row's first card
+ * from the left -- the same path a line of text takes at the edge of a page.
+ */
+export function wrapWire(g, { p0, p1, shape = null, inset = 10 }) {
+  const mx = Math.max(p0[0], p1[0]) + 46;
+  const my = Math.min(p0[1], p1[1]) + Math.abs(p0[1] - p1[1]) / 2;
+  const bx = p1[0] - inset;
+  g.append(el("path", {
+    class: "wire",
+    d: `M ${p0[0]} ${p0[1]} L ${mx} ${p0[1]} L ${mx} ${my} L ${bx} ${my} L ${bx} ${p1[1]}`,
+    "marker-end": "url(#arrow)",
+  }));
+  if (shape) {
+    g.append(txt((mx + bx) / 2, my - 9, shape, { class: "wire-t", "text-anchor": "middle" }));
+  }
+  return { mid: [(mx + bx) / 2, my] };
+}
+
+/**
+ * A join from a lane above: drop into the target's top edge.
+ *
+ * The vision lane is aligned so its last component sits directly above the
+ * block it feeds. Exiting right and entering left would read as a wrong-way
+ * wire; what the reader expects is a vertical drop into the top of the block,
+ * with the jog placed in the empty gutter between the two lanes.
+ */
+export function dropWire(g, { a, b, shape = null }) {
+  const ax = a.x + a.w / 2, bx = b.x + b.w / 2;
+  const gy = (a.y + a.h + b.y) / 2;
+  g.append(el("path", {
+    class: "wire",
+    d: `M ${ax} ${a.y + a.h} L ${ax} ${gy} L ${bx} ${gy} L ${bx} ${b.y}`,
+    "marker-end": "url(#arrow)",
+  }));
+  if (shape) {
+    g.append(txt(bx + 10, gy - 8, shape, { class: "wire-t", "text-anchor": "start" }));
+  }
+  return { mid: [bx, gy] };
+}
+
+/**
+ * A join from two or more bands above, around the margin.
+ *
+ * A straight drop would fall straight through every lane between: the towers'
+ * last components sit on the same column as the block they feed, and whatever
+ * occupies that column in the lanes between would be crossed behind. Going
+ * out by the right margin and coming down into the target's top edge crosses
+ * only empty space, at the cost of a longer path -- the right trade for a
+ * wire that has somewhere to be.
+ */
+export function marginDrop(g, { a, b, shape = null }) {
+  const mx = Math.max(a.x + a.w, b.x + b.w) + 46;
+  const gy = (a.y + a.h + b.y) / 2;
+  const ex = b.x + b.w - 30;
+  g.append(el("path", {
+    class: "wire",
+    d: `M ${a.x + a.w} ${a.y + a.h / 2} L ${mx} ${a.y + a.h / 2} L ${mx} ${gy}`
+      + ` L ${ex} ${gy} L ${ex} ${b.y}`,
+    "marker-end": "url(#arrow)",
+  }));
+  if (shape) {
+    g.append(txt(mx - 8, gy - 8, shape, { class: "wire-t", "text-anchor": "end" }));
+  }
+  return { mid: [mx, gy] };
+}
+
+/**
  * A skip connection: the thing that makes a U-Net a U-Net.
  *
  * The ordinary router cannot draw these. A skip runs from a deep down-block
  * back to an earlier up-block, so its endpoints are reversed relative to the
  * flow of the diagram, and an orthogonal router collapses it into a stub that
- * reads as a stray line. It is drawn instead as a curve *below* the lane,
- * dipping under everything between its ends -- which is what a skip looks like
- * in every drawing of a U-Net, and which keeps it visually distinct from the
- * forward chain it bypasses.
+ * reads as a stray line. When both ends sit on one row it is drawn as a curve
+ * *below* the lane, dipping under everything between its ends. When the flow
+ * has wrapped and the ends sit on different rows, it leaves the bottom of one
+ * card, runs through the empty gutter below that row, and comes down into the
+ * top of the other -- gutters are the only space a wire may cross, and this
+ * keeps every skip in one.
  */
-export function skipWire(g, { p0, p1, drop = 34 }) {
+export function skipWire(g, { p0, p1, drop = 34, a = null, b = null }) {
+  if (a && b && b.row > a.row) {
+    const ax = a.x + a.w / 2, bx = b.x + b.w / 2;
+    const gy = a.y + a.h + 30;
+    g.append(el("path", {
+      class: "skip",
+      d: `M ${ax} ${a.y + a.h} L ${ax} ${gy} L ${bx} ${gy} L ${bx} ${b.y}`,
+      "marker-end": "url(#arrow-skip)",
+    }));
+    return { mid: [(ax + bx) / 2, gy - 8] };
+  }
   const y = Math.max(p0[1], p1[1]) + drop;
   g.append(el("path", {
     class: "skip",
