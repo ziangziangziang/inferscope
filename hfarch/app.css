@@ -54,7 +54,8 @@ main { display: flex; min-height: calc(100vh - 52px); }
 }
 
 /* ---- the diagram ---- */
-.edge { fill: none; stroke: #9fb09a; stroke-width: 2; stroke-linecap: round; }
+.edge { fill: none; stroke: #8fa787; stroke-width: 1.6;
+  stroke-linecap: butt; stroke-linejoin: miter; }
 .node rect { transition: filter .12s ease; }
 .node text { pointer-events: none; }
 .node.dim { opacity: .32; }

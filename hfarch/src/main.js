@@ -24,9 +24,9 @@ const svg = $("svg"), err = $("err"), side = $("side"), detail = $("detail"), hi
 
 // the arrowhead the renderer points at
 svg.insertAdjacentHTML("afterbegin",
-  `<defs><marker id="head" viewBox="0 0 10 10" refX="8.5" refY="5"
-     markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-     <path d="M 0 1 L 9 5 L 0 9 z" fill="#9fb09a"/></marker></defs>`);
+  `<defs><marker id="head" viewBox="0 0 10 10" refX="8.6" refY="5"
+     markerWidth="4.2" markerHeight="4.2" orient="auto-start-reverse">
+     <path d="M 0 2 L 9 5 L 0 8 z" fill="#8fa787"/></marker></defs>`);
 
 function fail(e) {
   err.hidden = false;

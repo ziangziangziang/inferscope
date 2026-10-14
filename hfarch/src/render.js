@@ -172,17 +172,29 @@ export function render(svg, g, onPick) {
     fill: "#e9f1e4", stroke: "#88a882", "stroke-width": 1.2,
   }));
 
-  // ---- arrows, under the blocks ----
+  // ---- arrows ----
+  // Two rules, both of which the first attempt broke:
+  //  - every turn is a right angle. The old path ended `L p1.x p1.y` from a
+  //    mid point whose y had been nudged by -10, so the last leg came out as a
+  //    diagonal, which is what made these look like scribble rather than wiring.
+  //  - where the route bends, it bends once. A straight run between two blocks
+  //    at the same height stays a straight line.
   for (const e of g.edges) {
     const a = boxes.get(e.from), b = boxes.get(e.to);
     if (!a || !b) continue;
-    const p0 = iso(a.x + a.w, a.y + a.d / 2, 0);
-    const p1 = iso(b.x, b.y + b.d / 2, 0);
-    const mid = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2 - 10];
-    root.append(el("path", {
-      class: "edge", d: `M ${p0[0]} ${p0[1]} L ${mid[0]} ${p0[1]} L ${mid[0]} ${mid[1]} L ${p1[0] - 8} ${p1[1]}`,
-      "marker-end": "url(#head)",
-    }));
+    // join the blocks at half height, so an arrow meets a face rather than
+    // skimming along the plate underneath
+    const p0 = iso(a.x + a.w, a.y + a.d / 2, a.h / 2);
+    const p1 = iso(b.x, b.y + b.d / 2, b.h / 2);
+    const tip = [p1[0] - 9, p1[1]];
+    let d;
+    if (Math.abs(p0[1] - p1[1]) < 1.5) {
+      d = `M ${p0[0]} ${p0[1]} L ${tip[0]} ${tip[1]}`;
+    } else {
+      const mx = (p0[0] + tip[0]) / 2;
+      d = `M ${p0[0]} ${p0[1]} L ${mx} ${p0[1]} L ${mx} ${tip[1]} L ${tip[0]} ${tip[1]}`;
+    }
+    root.append(el("path", { class: "edge", d, "marker-end": "url(#head)" }));
   }
 
   // ---- blocks, back lane first (painter's algorithm: x+y is nearer) ----
